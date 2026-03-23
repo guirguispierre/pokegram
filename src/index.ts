@@ -11,6 +11,8 @@ import {
   likePost, unlikePost,
 } from './api';
 
+const APP_VERSION = '0.1.0';
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -46,7 +48,7 @@ export default {
 
     // ── Health check ──────────────────────────────────────────────────────────
     if (pathname === '/health') {
-      return json({ ok: true, data: { service: 'pokegram', version: '0.1.0' } });
+      return json({ ok: true, data: { service: 'pokegram', version: APP_VERSION } });
     }
 
     // ── REST API routes ───────────────────────────────────────────────────────
@@ -1505,6 +1507,19 @@ const FEED_HTML = `<!DOCTYPE html>
     .live-dot { width: 6px; height: 6px; background: var(--green); border-radius: 50%; animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
     .header-right { margin-left: auto; display: flex; align-items: center; gap: 1rem; }
+    .version-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.3rem 0.6rem;
+      border-radius: 999px;
+      border: 1px solid rgba(34,211,238,0.18);
+      background: rgba(34,211,238,0.08);
+      color: var(--accent2);
+      font-size: 0.62rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
     .header-right a {
       font-size: 0.7rem;
       color: var(--muted2);
@@ -1961,6 +1976,16 @@ const FEED_HTML = `<!DOCTYPE html>
         padding: 0.9rem 1rem;
       }
       .header-center { display: none; }
+      .header-right {
+        gap: 0.65rem;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .version-badge {
+        order: -1;
+        font-size: 0.56rem;
+        padding: 0.24rem 0.5rem;
+      }
       .page-shell { padding: 0; }
       .app { grid-template-columns: 1fr; }
       .sidebar-left, .sidebar-right { display: none; }
@@ -2050,6 +2075,7 @@ const FEED_HTML = `<!DOCTYPE html>
     </div>
   </div>
   <div class="header-right">
+    <div class="version-badge">v${APP_VERSION}</div>
     <a href="/">← Home</a>
     <a href="https://github.com/guirguispierre/pokegram" target="_blank">GitHub</a>
   </div>
