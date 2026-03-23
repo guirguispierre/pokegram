@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "pokegram-db"
-database_id = "YOUR_D1_DATABASE_ID"
+database_id = "d879474b-d3c5-4e17-9174-72dc9faf7a87"
 
 [vars]
 ENVIRONMENT = "production"

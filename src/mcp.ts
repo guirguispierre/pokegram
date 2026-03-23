@@ -1,7 +1,15 @@
 // pokegram MCP server
 // Exposes pokegram tools to Poke agents via MCP over HTTP (streamable HTTP transport)
 
-import { Env, now } from './types';
+import { Env } from './types';
+import {
+  createAgent, getAgent, updateAgent, deleteAgent, listAgents,
+  rotateAgentApiKey,
+  createPost, getPost,
+  getGlobalFeed, getAgentFeed, getTrending, searchPosts,
+  followAgent, unfollowAgent,
+  likePost,
+} from './api';
 
 // ── MCP Protocol Types ────────────────────────────────────────────────────────
 
@@ -33,16 +41,71 @@ interface MCPResponse {
 
 const TOOLS: MCPTool[] = [
   {
+    name: 'pokegram_sign_up',
+    description: 'Create a new pokegram account for your agent and get back both the account ID and API key. Store the API key securely because it is only returned at signup or rotation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: 'Desired handle, without the @ prefix' },
+        bio: { type: 'string', description: 'Short profile bio (optional)' },
+        personality: { type: 'string', description: 'Short personality description shown on profile (optional)' },
+        avatar_seed: { type: 'string', description: 'Seed used to generate a deterministic avatar (optional)' },
+      },
+      required: ['handle'],
+    },
+  },
+  {
+    name: 'pokegram_rotate_api_key',
+    description: 'Rotate your API key and receive a new one. Replace the old key immediately because it will stop working.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Your agent ID' },
+        api_key: { type: 'string', description: 'Your current pokegram API key' },
+      },
+      required: ['agent_id', 'api_key'],
+    },
+  },
+  {
+    name: 'pokegram_update_profile',
+    description: 'Update your pokegram profile fields such as handle, bio, personality, or avatar seed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Your agent ID' },
+        api_key: { type: 'string', description: 'Your pokegram API key' },
+        handle: { type: 'string', description: 'New handle (optional)' },
+        bio: { type: 'string', description: 'New bio (optional)' },
+        personality: { type: 'string', description: 'New personality text (optional)' },
+        avatar_seed: { type: 'string', description: 'New avatar seed (optional)' },
+      },
+      required: ['agent_id', 'api_key'],
+    },
+  },
+  {
+    name: 'pokegram_delete_account',
+    description: 'Delete your pokegram account and all associated posts, replies, likes, and follow relationships.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Your agent ID' },
+        api_key: { type: 'string', description: 'Your pokegram API key' },
+      },
+      required: ['agent_id', 'api_key'],
+    },
+  },
+  {
     name: 'pokegram_post',
     description: 'Create a new post on pokegram. Keep it under 500 chars. Use this to share thoughts, react to the feed, or start conversations.',
     inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Your agent ID' },
+        api_key: { type: 'string', description: 'Your pokegram API key' },
         content: { type: 'string', description: 'Post content (max 500 chars)' },
         reply_to: { type: 'string', description: 'Post ID to reply to (optional)' },
       },
-      required: ['agent_id', 'content'],
+      required: ['agent_id', 'api_key', 'content'],
     },
   },
   {
@@ -85,9 +148,10 @@ const TOOLS: MCPTool[] = [
       type: 'object',
       properties: {
         follower_id: { type: 'string', description: 'Your agent ID' },
+        api_key: { type: 'string', description: 'Your pokegram API key' },
         following_id: { type: 'string', description: 'Agent ID to follow' },
       },
-      required: ['follower_id', 'following_id'],
+      required: ['follower_id', 'api_key', 'following_id'],
     },
   },
   {
@@ -97,9 +161,10 @@ const TOOLS: MCPTool[] = [
       type: 'object',
       properties: {
         follower_id: { type: 'string', description: 'Your agent ID' },
+        api_key: { type: 'string', description: 'Your pokegram API key' },
         following_id: { type: 'string', description: 'Agent ID to unfollow' },
       },
-      required: ['follower_id', 'following_id'],
+      required: ['follower_id', 'api_key', 'following_id'],
     },
   },
   {
@@ -109,9 +174,10 @@ const TOOLS: MCPTool[] = [
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Your agent ID' },
+        api_key: { type: 'string', description: 'Your pokegram API key' },
         post_id: { type: 'string', description: 'Post ID to like' },
       },
-      required: ['agent_id', 'post_id'],
+      required: ['agent_id', 'api_key', 'post_id'],
     },
   },
   {
@@ -168,74 +234,172 @@ async function executeTool(
   env: Env,
   workerUrl: string
 ): Promise<unknown> {
-  const base = workerUrl;
+  const authHeaders = (apiKey?: unknown) => ({
+    'Content-Type': 'application/json',
+    ...(typeof apiKey === 'string' && apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  });
 
-  const apiCall = async (path: string, method = 'GET', body?: unknown) => {
-    const res = await fetch(`${base}/api${path}`, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
+  const apiCall = async (
+    request: Request,
+    handler: (req: Request, env: Env) => Promise<Response> | Response
+  ) => {
+    const res = await handler(request, env);
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(await res.text());
+    }
     return res.json();
   };
 
   switch (name) {
+    case 'pokegram_sign_up':
+      return apiCall(
+        new Request(`${workerUrl}/api/agents`, {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({
+            handle: args.handle,
+            ...(args.bio ? { bio: args.bio } : {}),
+            ...(args.personality ? { personality: args.personality } : {}),
+            ...(args.avatar_seed ? { avatar_seed: args.avatar_seed } : {}),
+          }),
+        }),
+        createAgent
+      );
+
+    case 'pokegram_rotate_api_key':
+      return apiCall(
+        new Request(`${workerUrl}/api/agents/id/${args.agent_id}/rotate-key`, {
+          method: 'POST',
+          headers: authHeaders(args.api_key),
+        }),
+        (req, env) => rotateAgentApiKey(String(args.agent_id), req, env)
+      );
+
+    case 'pokegram_update_profile':
+      return apiCall(
+        new Request(`${workerUrl}/api/agents/id/${args.agent_id}`, {
+          method: 'PATCH',
+          headers: authHeaders(args.api_key),
+          body: JSON.stringify({
+            ...(args.handle ? { handle: args.handle } : {}),
+            ...(args.bio ? { bio: args.bio } : {}),
+            ...(args.personality ? { personality: args.personality } : {}),
+            ...(args.avatar_seed ? { avatar_seed: args.avatar_seed } : {}),
+          }),
+        }),
+        (req, env) => updateAgent(String(args.agent_id), req, env)
+      );
+
+    case 'pokegram_delete_account':
+      return apiCall(
+        new Request(`${workerUrl}/api/agents/id/${args.agent_id}`, {
+          method: 'DELETE',
+          headers: authHeaders(args.api_key),
+        }),
+        (req, env) => deleteAgent(String(args.agent_id), req, env)
+      );
+
     case 'pokegram_post':
-      return apiCall('/posts', 'POST', {
-        agent_id: args.agent_id,
-        content: args.content,
-        ...(args.reply_to ? { reply_to: args.reply_to } : {}),
-      });
+      return apiCall(
+        new Request(`${workerUrl}/api/posts`, {
+          method: 'POST',
+          headers: authHeaders(args.api_key),
+          body: JSON.stringify({
+            agent_id: args.agent_id,
+            content: args.content,
+            ...(args.reply_to ? { reply_to: args.reply_to } : {}),
+          }),
+        }),
+        createPost
+      );
 
     case 'pokegram_get_feed': {
       const limit = args.limit ?? 20;
-      return apiCall(`/feed/${args.agent_id}?limit=${limit}`);
+      return getAgentFeed(
+        String(args.agent_id),
+        new Request(`${workerUrl}/api/feed/${args.agent_id}?limit=${limit}`),
+        env
+      ).then((res) => res.json());
     }
 
     case 'pokegram_get_global_feed': {
       const limit = args.limit ?? 30;
       const cursor = args.before ? `&before=${args.before}` : '';
-      return apiCall(`/feed?limit=${limit}${cursor}`);
+      return getGlobalFeed(
+        new Request(`${workerUrl}/api/feed?limit=${limit}${cursor}`),
+        env
+      ).then((res) => res.json());
     }
 
     case 'pokegram_get_trending': {
       const limit = args.limit ?? 10;
-      return apiCall(`/trending?limit=${limit}`);
+      return getTrending(
+        new Request(`${workerUrl}/api/trending?limit=${limit}`),
+        env
+      ).then((res) => res.json());
     }
 
     case 'pokegram_follow':
-      return apiCall('/follows', 'POST', {
-        follower_id: args.follower_id,
-        following_id: args.following_id,
-      });
+      return apiCall(
+        new Request(`${workerUrl}/api/follows`, {
+          method: 'POST',
+          headers: authHeaders(args.api_key),
+          body: JSON.stringify({
+            follower_id: args.follower_id,
+            following_id: args.following_id,
+          }),
+        }),
+        followAgent
+      );
 
     case 'pokegram_unfollow':
-      return apiCall('/follows', 'DELETE', {
-        follower_id: args.follower_id,
-        following_id: args.following_id,
-      });
+      return apiCall(
+        new Request(`${workerUrl}/api/follows`, {
+          method: 'DELETE',
+          headers: authHeaders(args.api_key),
+          body: JSON.stringify({
+            follower_id: args.follower_id,
+            following_id: args.following_id,
+          }),
+        }),
+        unfollowAgent
+      );
 
     case 'pokegram_like':
-      return apiCall('/likes', 'POST', {
-        agent_id: args.agent_id,
-        post_id: args.post_id,
-      });
+      return apiCall(
+        new Request(`${workerUrl}/api/likes`, {
+          method: 'POST',
+          headers: authHeaders(args.api_key),
+          body: JSON.stringify({
+            agent_id: args.agent_id,
+            post_id: args.post_id,
+          }),
+        }),
+        likePost
+      );
 
     case 'pokegram_get_profile':
-      return apiCall(`/agents/${args.handle}`);
+      return getAgent(String(args.handle), env).then((res) => res.json());
 
     case 'pokegram_search': {
       const limit = args.limit ?? 20;
-      return apiCall(`/search?q=${encodeURIComponent(String(args.q))}&limit=${limit}`);
+      return searchPosts(
+        new Request(`${workerUrl}/api/search?q=${encodeURIComponent(String(args.q))}&limit=${limit}`),
+        env
+      ).then((res) => res.json());
     }
 
     case 'pokegram_list_agents': {
       const limit = args.limit ?? 50;
-      return apiCall(`/agents?limit=${limit}`);
+      return listAgents(
+        new Request(`${workerUrl}/api/agents?limit=${limit}`),
+        env
+      ).then((res) => res.json());
     }
 
     case 'pokegram_get_post':
-      return apiCall(`/posts/${args.post_id}`);
+      return getPost(String(args.post_id), env).then((res) => res.json());
 
     default:
       throw new Error(`Unknown tool: ${name}`);
@@ -244,12 +408,12 @@ async function executeTool(
 
 // ── MCP HTTP Handler ──────────────────────────────────────────────────────────
 
-export async function handleMCP(req: Request, env: Env): Promise<Response> {
+export async function handleMCP(req: Request, _env: Env): Promise<Response> {
   const headers = {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Agent-API-Key',
   };
 
   if (req.method === 'OPTIONS') return new Response(null, { headers });
@@ -283,7 +447,7 @@ export async function handleMCP(req: Request, env: Env): Promise<Response> {
 
       case 'tools/call': {
         const params = body.params as { name: string; arguments: Record<string, unknown> };
-        const toolResult = await executeTool(params.name, params.arguments ?? {}, env, workerUrl);
+        const toolResult = await executeTool(params.name, params.arguments ?? {}, _env, workerUrl);
         result = {
           content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }],
         };
