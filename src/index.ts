@@ -207,6 +207,19 @@ const LANDING_HTML = `<!DOCTYPE html>
       margin-left: auto;
       align-items: center;
     }
+    .nav-mobile-cta {
+      display: none;
+      margin-left: auto;
+      text-decoration: none;
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 999px;
+      padding: 0.55rem 0.9rem;
+      background: rgba(255,255,255,0.03);
+    }
     .nav-links a {
       color: var(--muted);
       text-decoration: none;
@@ -917,19 +930,69 @@ const LANDING_HTML = `<!DOCTYPE html>
       .cursor, .cursor-ring { display: none; }
       nav { padding: 1rem 1.25rem; }
       .nav-links { display: none; }
-      .hero { padding: 7rem 1.25rem 4rem; }
+      .nav-mobile-cta { display: inline-flex; }
+      .hero {
+        min-height: auto;
+        padding: 6.25rem 1.25rem 3rem;
+        align-items: stretch;
+      }
+      .hero-shell { gap: 1.75rem; }
+      .hero-copy { max-width: none; }
+      .hero-tag {
+        margin-bottom: 1.25rem;
+        font-size: 0.6rem;
+        letter-spacing: 0.11em;
+        line-height: 1.4;
+        padding: 0.35rem 0.7rem;
+      }
+      .hero-title {
+        font-size: clamp(2.75rem, 12vw, 3.55rem);
+        line-height: 0.9;
+        max-width: 6.4ch;
+      }
+      .hero-sub {
+        font-size: 0.88rem;
+        line-height: 1.75;
+        margin-bottom: 1.5rem;
+      }
+      .hero-actions {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .btn-primary,
+      .btn-ghost {
+        justify-content: center;
+        width: 100%;
+      }
       .hero-shell,
       .hero-card-grid,
       .hero-signal-list,
       .hero-proof { grid-template-columns: 1fr; }
       .hero-card-top { flex-direction: column; }
       .hero-card-title { max-width: none; }
+      .hero-panel,
+      .hero-orbit { display: none; }
+      .marquee-wrap { padding: 0.8rem 0; }
+      .marquee-item {
+        font-size: 0.62rem;
+        letter-spacing: 0.1em;
+        gap: 0.75rem;
+      }
       .feed-preview,
       .features,
       .how,
       .cta-section,
       footer,
       .stats-bar { padding-left: 1.25rem; padding-right: 1.25rem; }
+      .section-title {
+        font-size: clamp(1.9rem, 9vw, 2.6rem);
+        line-height: 1.02;
+      }
+      .section-desc { font-size: 0.84rem; }
+      .mock-post,
+      .feature-card,
+      .step { padding: 1.25rem; }
+      .hero-proof-item { padding: 0.9rem 1rem; }
       .mock-feed { grid-template-columns: 1fr; }
       .features-grid { grid-template-columns: 1fr; }
       .steps { grid-template-columns: 1fr; }
@@ -959,6 +1022,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     <a href="https://github.com/guirguispierre/pokegram" target="_blank">GitHub</a>
     <a href="/ui/feed" class="nav-cta">Open Live Feed →</a>
   </div>
+  <a href="/ui/feed" class="nav-mobile-cta">Open Feed</a>
 </nav>
 
 <!-- Hero -->
@@ -1748,6 +1812,7 @@ const FEED_HTML = `<!DOCTYPE html>
       padding: 0 1.1rem 1rem;
       border-bottom: 1px solid var(--border);
     }
+    .mobile-search { display: none; }
     .search-input {
       width: 100%;
       background: rgba(255,255,255,0.04);
@@ -1836,15 +1901,70 @@ const FEED_HTML = `<!DOCTYPE html>
         border-right: none;
         border-radius: 0;
       }
-      .feed-overview { grid-template-columns: 1fr; }
-      .overview-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .feed-overview {
+        grid-template-columns: 1fr;
+        padding: 1.15rem 1rem 1rem;
+        gap: 1rem;
+      }
+      .overview-title {
+        font-size: clamp(2rem, 11vw, 3rem);
+        max-width: 9ch;
+      }
+      .overview-copy {
+        font-size: 0.8rem;
+        line-height: 1.7;
+      }
+      .overview-stats {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.6rem;
+      }
+      .overview-stat {
+        padding: 0.8rem 0.75rem;
+        border-radius: 14px;
+      }
+      .overview-stat-value { font-size: 1.05rem; }
+      .overview-stat-label {
+        font-size: 0.56rem;
+        letter-spacing: 0.1em;
+      }
+      .mobile-search {
+        display: block;
+        padding: 0.95rem 1rem 0.8rem;
+      }
+      .search-input {
+        padding: 0.8rem 0.9rem;
+        border-radius: 12px;
+      }
+      .feed-tab {
+        padding: 0.95rem 0.65rem;
+        font-size: 0.72rem;
+      }
+      .post-card { padding: 1.1rem 1rem; }
+      .post-content {
+        font-size: 0.82rem;
+        line-height: 1.7;
+      }
+      .empty-state {
+        min-height: 300px;
+        padding: 2.25rem 1rem;
+      }
+      .empty-panel {
+        width: 100%;
+        padding: 1.6rem 1.2rem;
+      }
       .ticker {
         width: 100%;
-        padding: 0.55rem 1rem 0.85rem;
-        flex-wrap: wrap;
-        gap: 1rem;
+        padding: 0.5rem 1rem 0.85rem;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.4rem 1rem;
         background: rgba(8,8,12,0.92);
         backdrop-filter: blur(20px);
+      }
+      .ticker-item { min-width: 0; }
+      #tickerTime {
+        grid-column: 1 / -1;
+        text-align: right;
       }
     }
   </style>
@@ -1903,6 +2023,9 @@ const FEED_HTML = `<!DOCTYPE html>
           <span class="overview-stat-label">trending now</span>
         </div>
       </div>
+    </div>
+    <div class="mobile-search search-wrap">
+      <input class="search-input" type="text" placeholder="Search the feed..." />
     </div>
     <div class="feed-tabs">
       <div class="feed-tab active" onclick="switchTab('global')">Latest Posts</div>
@@ -2123,21 +2246,26 @@ const FEED_HTML = `<!DOCTYPE html>
 
   // ─ Search ─────────────────────────────────────────────────────────────────
   let searchTimer;
-  document.getElementById('searchInput').addEventListener('input', (e) => {
-    clearTimeout(searchTimer);
-    const q = e.target.value.trim();
-    if (!q) { loadFeed(currentTab); return; }
-    searchTimer = setTimeout(async () => {
-      try {
-        const { data } = await fetchJson(\`\${API}/api/search?q=\${encodeURIComponent(q)}&limit=20\`);
-        renderPosts(data || [], document.getElementById('postsList'));
-        setText('tickerPosts', String(data?.length ?? 0));
-        setText('heroPosts', String(data?.length ?? 0));
-      } catch(e) {
-        renderState(document.getElementById('postsList'), '⚡', 'Search is unavailable', 'The feed search endpoint did not return usable data.');
-        console.error(e);
-      }
-    }, 350);
+  document.querySelectorAll('.search-input').forEach((input) => {
+    input.addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      const q = e.target.value.trim();
+      document.querySelectorAll('.search-input').forEach((other) => {
+        if (other !== e.target) other.value = q;
+      });
+      if (!q) { loadFeed(currentTab); return; }
+      searchTimer = setTimeout(async () => {
+        try {
+          const { data } = await fetchJson(\`\${API}/api/search?q=\${encodeURIComponent(q)}&limit=20\`);
+          renderPosts(data || [], document.getElementById('postsList'));
+          setText('tickerPosts', String(data?.length ?? 0));
+          setText('heroPosts', String(data?.length ?? 0));
+        } catch(e) {
+          renderState(document.getElementById('postsList'), '⚡', 'Search is unavailable', 'The feed search endpoint did not return usable data.');
+          console.error(e);
+        }
+      }, 350);
+    });
   });
 
   // ─ Tabs ───────────────────────────────────────────────────────────────────
