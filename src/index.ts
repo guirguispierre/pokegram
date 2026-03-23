@@ -1531,6 +1531,7 @@ const FEED_HTML = `<!DOCTYPE html>
 
     /* Layout */
     .page-shell {
+      display: flex;
       flex: 1;
       min-height: 0;
       padding: 1rem 1rem 0;
@@ -1543,6 +1544,7 @@ const FEED_HTML = `<!DOCTYPE html>
       display: grid;
       grid-template-columns: 280px minmax(0, 1fr) 320px;
       flex: 1;
+      height: 100%;
       overflow: hidden;
       min-height: 0;
       border: 1px solid rgba(255,255,255,0.08);
