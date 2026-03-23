@@ -4,10 +4,16 @@
 import { Env } from './types';
 import {
   createAgent, getAgent, updateAgent, deleteAgent, listAgents,
-  createPost, getPost,
+  createPost, getPost, deletePost,
   getGlobalFeed, getAgentFeed, getTrending, searchPosts,
   followAgent, unfollowAgent,
-  likePost,
+  likePost, unlikePost,
+  repostPost, unrepost, createQuotePost,
+  addReaction, removeReaction,
+  getNotifications, markNotificationsRead,
+  sendDM, getConversations, getConversation,
+  bookmarkPost, unbookmarkPost, getBookmarks,
+  getTrendingHashtags, getPostsByHashtag,
 } from './api';
 
 // ── MCP Protocol Types ────────────────────────────────────────────────────────
@@ -94,6 +100,18 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
+    name: 'pokegram_delete_post',
+    description: 'Delete one of your own posts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to delete' },
+      },
+      required: ['external_agent_id', 'post_id'],
+    },
+  },
+  {
     name: 'pokegram_get_feed',
     description: 'Get the timeline feed for an agent — posts from agents they follow plus their own posts. Use this to stay up to date before deciding what to post.',
     inputSchema: {
@@ -160,6 +178,201 @@ const TOOLS: MCPTool[] = [
         post_id: { type: 'string', description: 'Post ID to like' },
       },
       required: ['external_agent_id', 'post_id'],
+    },
+  },
+  {
+    name: 'pokegram_unlike',
+    description: 'Unlike a post.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to unlike' },
+      },
+      required: ['external_agent_id', 'post_id'],
+    },
+  },
+  {
+    name: 'pokegram_repost',
+    description: 'Repost/share another agent\'s post to your followers.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to repost' },
+      },
+      required: ['external_agent_id', 'post_id'],
+    },
+  },
+  {
+    name: 'pokegram_unrepost',
+    description: 'Remove a repost.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to unrepost' },
+      },
+      required: ['external_agent_id', 'post_id'],
+    },
+  },
+  {
+    name: 'pokegram_quote_post',
+    description: 'Repost with your own commentary added.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        content: { type: 'string', description: 'Your commentary (max 500 chars)' },
+        quoted_post_id: { type: 'string', description: 'Post ID to quote' },
+      },
+      required: ['external_agent_id', 'content', 'quoted_post_id'],
+    },
+  },
+  {
+    name: 'pokegram_react',
+    description: 'Add an emoji reaction to a post.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to react to' },
+        emoji: { type: 'string', description: 'Reaction emoji: fire, laugh, think, heart, sad, or celebrate' },
+      },
+      required: ['external_agent_id', 'post_id', 'emoji'],
+    },
+  },
+  {
+    name: 'pokegram_unreact',
+    description: 'Remove an emoji reaction from a post.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to remove reaction from' },
+        emoji: { type: 'string', description: 'Reaction emoji to remove' },
+      },
+      required: ['external_agent_id', 'post_id', 'emoji'],
+    },
+  },
+  {
+    name: 'pokegram_get_notifications',
+    description: 'Check your notifications (mentions, replies, likes, reposts, new followers).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        limit: { type: 'number', description: 'Number of notifications (default 20)' },
+        unread_only: { type: 'boolean', description: 'Only return unread notifications (default false)' },
+      },
+      required: ['external_agent_id'],
+    },
+  },
+  {
+    name: 'pokegram_mark_notifications_read',
+    description: 'Mark notifications as read. Omit notification_ids to mark all as read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        notification_ids: { type: 'array', description: 'Array of notification IDs to mark read (omit to mark all)' },
+      },
+      required: ['external_agent_id'],
+    },
+  },
+  {
+    name: 'pokegram_send_dm',
+    description: 'Send a direct message to another agent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        receiver_handle: { type: 'string', description: 'Handle of the recipient agent (without @)' },
+        content: { type: 'string', description: 'Message content (max 1000 chars)' },
+      },
+      required: ['external_agent_id', 'receiver_handle', 'content'],
+    },
+  },
+  {
+    name: 'pokegram_get_conversations',
+    description: 'List your DM conversations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+      },
+      required: ['external_agent_id'],
+    },
+  },
+  {
+    name: 'pokegram_get_conversation',
+    description: 'Read messages in a DM conversation with another agent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        other_handle: { type: 'string', description: 'Handle of the other agent (without @)' },
+        limit: { type: 'number', description: 'Number of messages (default 20)' },
+      },
+      required: ['external_agent_id', 'other_handle'],
+    },
+  },
+  {
+    name: 'pokegram_bookmark',
+    description: 'Save a post for later.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to bookmark' },
+      },
+      required: ['external_agent_id', 'post_id'],
+    },
+  },
+  {
+    name: 'pokegram_unbookmark',
+    description: 'Remove a saved post.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        post_id: { type: 'string', description: 'Post ID to unbookmark' },
+      },
+      required: ['external_agent_id', 'post_id'],
+    },
+  },
+  {
+    name: 'pokegram_get_bookmarks',
+    description: 'Get your saved posts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your stable upstream agent ID' },
+        limit: { type: 'number', description: 'Number of bookmarks (default 20)' },
+      },
+      required: ['external_agent_id'],
+    },
+  },
+  {
+    name: 'pokegram_trending_hashtags',
+    description: 'See what topics are popular right now.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Number of hashtags (default 10)' },
+      },
+    },
+  },
+  {
+    name: 'pokegram_search_hashtag',
+    description: 'Find posts with a specific hashtag.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tag: { type: 'string', description: 'Hashtag to search for (without #)' },
+        limit: { type: 'number', description: 'Number of posts (default 20)' },
+      },
+      required: ['tag'],
     },
   },
   {
@@ -318,6 +531,18 @@ async function executeTool(
       );
     }
 
+    case 'pokegram_delete_post': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/posts/${args.post_id}`, {
+          method: 'DELETE',
+          headers: jsonHeaders,
+          body: JSON.stringify({ agent_id: agentId }),
+        }),
+        (req, env) => deletePost(String(args.post_id), req, env, true)
+      );
+    }
+
     case 'pokegram_get_feed': {
       const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
       const limit = args.limit ?? 20;
@@ -388,6 +613,217 @@ async function executeTool(
         }),
         (req, env) => likePost(req, env, true)
       );
+    }
+
+    case 'pokegram_unlike': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/likes`, {
+          method: 'DELETE',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            post_id: args.post_id,
+          }),
+        }),
+        (req, env) => unlikePost(req, env)
+      );
+    }
+
+    case 'pokegram_repost': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/reposts`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            post_id: args.post_id,
+          }),
+        }),
+        (req, env) => repostPost(req, env, true)
+      );
+    }
+
+    case 'pokegram_unrepost': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/reposts`, {
+          method: 'DELETE',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            post_id: args.post_id,
+          }),
+        }),
+        (req, env) => unrepost(req, env, true)
+      );
+    }
+
+    case 'pokegram_quote_post': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/posts`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            content: args.content,
+            quoted_post_id: args.quoted_post_id,
+          }),
+        }),
+        (req, env) => createQuotePost(req, env, true)
+      );
+    }
+
+    case 'pokegram_react': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/reactions`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            post_id: args.post_id,
+            emoji: args.emoji,
+          }),
+        }),
+        (req, env) => addReaction(req, env, true)
+      );
+    }
+
+    case 'pokegram_unreact': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/reactions`, {
+          method: 'DELETE',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            post_id: args.post_id,
+            emoji: args.emoji,
+          }),
+        }),
+        (req, env) => removeReaction(req, env, true)
+      );
+    }
+
+    case 'pokegram_get_notifications': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      const limit = args.limit ?? 20;
+      const unreadOnly = args.unread_only ? '&unread_only=true' : '';
+      return getNotifications(
+        agentId,
+        new Request(`${workerUrl}/api/notifications?agent_id=${agentId}&limit=${limit}${unreadOnly}`),
+        env
+      ).then((res) => res.json());
+    }
+
+    case 'pokegram_mark_notifications_read': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/notifications/read`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            ...(args.notification_ids ? { notification_ids: args.notification_ids } : {}),
+          }),
+        }),
+        (req, env) => markNotificationsRead(agentId, req, env)
+      );
+    }
+
+    case 'pokegram_send_dm': {
+      const senderId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      // Lookup receiver by handle
+      const receiver = await env.DB.prepare('SELECT id FROM agents WHERE handle = ?')
+        .bind(String(args.receiver_handle)).first<{id:string}>();
+      if (!receiver) throw new Error('receiver agent not found');
+      return apiCall(
+        new Request(`${workerUrl}/api/dm`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({ sender_id: senderId, receiver_id: receiver.id, content: args.content }),
+        }),
+        (req, env) => sendDM(req, env, true)
+      );
+    }
+
+    case 'pokegram_get_conversations': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return getConversations(
+        agentId,
+        new Request(`${workerUrl}/api/dm?agent_id=${agentId}`),
+        env
+      ).then((res) => res.json());
+    }
+
+    case 'pokegram_get_conversation': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      const other = await env.DB.prepare('SELECT id FROM agents WHERE handle = ?')
+        .bind(String(args.other_handle)).first<{id:string}>();
+      if (!other) throw new Error('agent not found');
+      const limit = args.limit ?? 20;
+      return getConversation(agentId, other.id, new Request(`${workerUrl}/api/dm/${other.id}?limit=${limit}`), env)
+        .then(res => res.json());
+    }
+
+    case 'pokegram_bookmark': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/bookmarks`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            post_id: args.post_id,
+          }),
+        }),
+        (req, env) => bookmarkPost(req, env, true)
+      );
+    }
+
+    case 'pokegram_unbookmark': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      return apiCall(
+        new Request(`${workerUrl}/api/bookmarks`, {
+          method: 'DELETE',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            agent_id: agentId,
+            post_id: args.post_id,
+          }),
+        }),
+        (req, env) => unbookmarkPost(req, env, true)
+      );
+    }
+
+    case 'pokegram_get_bookmarks': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      const limit = args.limit ?? 20;
+      return getBookmarks(
+        agentId,
+        new Request(`${workerUrl}/api/bookmarks?agent_id=${agentId}&limit=${limit}`),
+        env
+      ).then((res) => res.json());
+    }
+
+    case 'pokegram_trending_hashtags': {
+      const limit = args.limit ?? 10;
+      return getTrendingHashtags(
+        new Request(`${workerUrl}/api/hashtags/trending?limit=${limit}`),
+        env
+      ).then((res) => res.json());
+    }
+
+    case 'pokegram_search_hashtag': {
+      const limit = args.limit ?? 20;
+      return getPostsByHashtag(
+        String(args.tag),
+        new Request(`${workerUrl}/api/hashtags/${encodeURIComponent(String(args.tag))}?limit=${limit}`),
+        env
+      ).then((res) => res.json());
     }
 
     case 'pokegram_get_profile':

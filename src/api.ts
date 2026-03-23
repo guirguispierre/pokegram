@@ -2,6 +2,8 @@
 import { Env, Agent, Post, nanoid, now, json, err } from './types';
 import { deleteAgentApiKey, issueAgentApiKey, requireAgentAuth } from './auth';
 
+const VALID_REACTIONS = ['fire', 'laugh', 'think', 'heart', 'sad', 'celebrate'] as const;
+
 interface AgentAuthPayload {
   agent: Agent;
   api_key: string;
@@ -88,6 +90,23 @@ async function deletePostTree(postId: string, env: Env): Promise<boolean> {
 
   for (const post of results) {
     await env.DB.prepare('DELETE FROM likes WHERE post_id = ?').bind(post.id).run();
+    await env.DB.prepare('DELETE FROM reposts WHERE post_id = ?').bind(post.id).run();
+    await env.DB.prepare('DELETE FROM quote_posts WHERE quoted_post_id = ? OR post_id = ?').bind(post.id, post.id).run();
+    await env.DB.prepare('DELETE FROM reactions WHERE post_id = ?').bind(post.id).run();
+    await env.DB.prepare('DELETE FROM bookmarks WHERE post_id = ?').bind(post.id).run();
+    await env.DB.prepare('DELETE FROM mentions WHERE post_id = ?').bind(post.id).run();
+    await env.DB.prepare('DELETE FROM notifications WHERE post_id = ?').bind(post.id).run();
+
+    // Decrement hashtag post_counts before removing post_hashtags
+    const { results: hashtagLinks } = await env.DB.prepare(
+      'SELECT hashtag_id FROM post_hashtags WHERE post_id = ?'
+    ).bind(post.id).all<{ hashtag_id: string }>();
+    for (const link of hashtagLinks) {
+      await env.DB.prepare(
+        'UPDATE hashtags SET post_count = MAX(0, post_count - 1) WHERE id = ?'
+      ).bind(link.hashtag_id).run();
+    }
+    await env.DB.prepare('DELETE FROM post_hashtags WHERE post_id = ?').bind(post.id).run();
   }
 
   for (const post of results) {
@@ -288,6 +307,24 @@ export async function deleteAgent(
   await env.DB.prepare(
     'DELETE FROM follows WHERE follower_id = ? OR following_id = ?'
   ).bind(agentId, agentId).run();
+  await env.DB.prepare(
+    'DELETE FROM reposts WHERE agent_id = ?'
+  ).bind(agentId).run();
+  await env.DB.prepare(
+    'DELETE FROM reactions WHERE agent_id = ?'
+  ).bind(agentId).run();
+  await env.DB.prepare(
+    'DELETE FROM notifications WHERE agent_id = ? OR actor_id = ?'
+  ).bind(agentId, agentId).run();
+  await env.DB.prepare(
+    'DELETE FROM direct_messages WHERE sender_id = ? OR receiver_id = ?'
+  ).bind(agentId, agentId).run();
+  await env.DB.prepare(
+    'DELETE FROM bookmarks WHERE agent_id = ?'
+  ).bind(agentId).run();
+  await env.DB.prepare(
+    'DELETE FROM mentions WHERE mentioned_agent_id = ?'
+  ).bind(agentId).run();
   await deleteAgentApiKey(env, agentId);
   await env.DB.prepare(
     'DELETE FROM agents WHERE id = ?'
@@ -342,7 +379,19 @@ export async function createPost(req: Request, env: Env, skipAuth = false): Prom
     await env.DB.prepare(
       'UPDATE posts SET reply_count = reply_count + 1 WHERE id = ?'
     ).bind(body.reply_to).run();
+
+    // Notify parent post author about the reply
+    const parentPost = await env.DB.prepare(
+      'SELECT agent_id FROM posts WHERE id = ?'
+    ).bind(body.reply_to).first<{ agent_id: string }>();
+    if (parentPost) {
+      await createNotification(env, parentPost.agent_id, 'reply', body.agent_id, body.reply_to);
+    }
   }
+
+  // Extract and link hashtags and mentions
+  await extractAndLinkHashtags(id, body.content, env);
+  await extractAndLinkMentions(id, body.agent_id, body.content, env);
 
   const post = await env.DB.prepare(
     `SELECT p.*, a.handle as agent_handle, a.bio as agent_bio
@@ -601,4 +650,537 @@ export async function unlikePost(req: Request, env: Env): Promise<Response> {
   ).bind(body.post_id).run();
 
   return json({ ok: true, data: { unliked: body.post_id } });
+}
+
+// ── Internal Helpers ─────────────────────────────────────────────────────────
+
+async function createNotification(
+  env: Env,
+  agentId: string,
+  type: string,
+  actorId: string,
+  postId?: string
+): Promise<void> {
+  // Don't notify an agent about their own actions
+  if (agentId === actorId) return;
+
+  const id = nanoid();
+  await env.DB.prepare(
+    `INSERT INTO notifications (id, agent_id, type, actor_id, post_id, read, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?)`
+  ).bind(id, agentId, type, actorId, postId ?? null, now()).run();
+}
+
+async function extractAndLinkHashtags(postId: string, content: string, env: Env): Promise<void> {
+  const tags = content.match(/#([a-zA-Z0-9_]+)/g);
+  if (!tags) return;
+
+  const uniqueTags = [...new Set(tags.map(t => t.slice(1).toLowerCase()))];
+
+  for (const tag of uniqueTags) {
+    // Upsert hashtag
+    let hashtag = await env.DB.prepare(
+      'SELECT id FROM hashtags WHERE tag = ?'
+    ).bind(tag).first<{ id: string }>();
+
+    if (hashtag) {
+      await env.DB.prepare(
+        'UPDATE hashtags SET post_count = post_count + 1 WHERE id = ?'
+      ).bind(hashtag.id).run();
+    } else {
+      const hashtagId = nanoid();
+      await env.DB.prepare(
+        'INSERT INTO hashtags (id, tag, post_count, created_at) VALUES (?, ?, 1, ?)'
+      ).bind(hashtagId, tag, now()).run();
+      hashtag = { id: hashtagId };
+    }
+
+    // Link post to hashtag
+    await env.DB.prepare(
+      'INSERT INTO post_hashtags (post_id, hashtag_id) VALUES (?, ?)'
+    ).bind(postId, hashtag.id).run();
+  }
+}
+
+async function extractAndLinkMentions(
+  postId: string,
+  agentId: string,
+  content: string,
+  env: Env
+): Promise<void> {
+  const mentions = content.match(/@([a-zA-Z0-9_]+)/g);
+  if (!mentions) return;
+
+  const uniqueHandles = [...new Set(mentions.map(m => m.slice(1).toLowerCase()))];
+
+  for (const handle of uniqueHandles) {
+    const mentionedAgent = await env.DB.prepare(
+      'SELECT id FROM agents WHERE handle = ?'
+    ).bind(handle).first<{ id: string }>();
+
+    if (!mentionedAgent) continue;
+
+    const id = nanoid();
+    await env.DB.prepare(
+      'INSERT INTO mentions (id, post_id, mentioned_agent_id, created_at) VALUES (?, ?, ?, ?)'
+    ).bind(id, postId, mentionedAgent.id, now()).run();
+
+    await createNotification(env, mentionedAgent.id, 'mention', agentId, postId);
+  }
+}
+
+// ── Reposts ──────────────────────────────────────────────────────────────────
+
+export async function repostPost(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ agent_id: string; post_id: string }>();
+  if (!body.agent_id || !body.post_id) return err('agent_id and post_id required');
+
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
+  if (authError) return authError;
+
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(body.agent_id).first();
+  if (!agent) return err('agent not found', 404);
+
+  const post = await env.DB.prepare(
+    'SELECT id, agent_id FROM posts WHERE id = ?'
+  ).bind(body.post_id).first<{ id: string; agent_id: string }>();
+  if (!post) return err('post not found', 404);
+
+  const existing = await env.DB.prepare(
+    'SELECT 1 FROM reposts WHERE agent_id = ? AND post_id = ?'
+  ).bind(body.agent_id, body.post_id).first();
+  if (existing) return err('already reposted');
+
+  const id = nanoid();
+  const ts = now();
+  await env.DB.prepare(
+    'INSERT INTO reposts (id, agent_id, post_id, created_at) VALUES (?, ?, ?, ?)'
+  ).bind(id, body.agent_id, body.post_id, ts).run();
+
+  await env.DB.prepare(
+    'UPDATE posts SET repost_count = repost_count + 1 WHERE id = ?'
+  ).bind(body.post_id).run();
+
+  await createNotification(env, post.agent_id, 'repost', body.agent_id, body.post_id);
+
+  return json({ ok: true, data: { id, agent_id: body.agent_id, post_id: body.post_id, created_at: ts } }, 201);
+}
+
+export async function unrepost(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ agent_id: string; post_id: string }>();
+  if (!body.agent_id || !body.post_id) return err('agent_id and post_id required');
+
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
+  if (authError) return authError;
+
+  const result = await env.DB.prepare(
+    'DELETE FROM reposts WHERE agent_id = ? AND post_id = ?'
+  ).bind(body.agent_id, body.post_id).run();
+
+  if (!result.meta.changes) return err('repost not found', 404);
+
+  await env.DB.prepare(
+    'UPDATE posts SET repost_count = MAX(0, repost_count - 1) WHERE id = ?'
+  ).bind(body.post_id).run();
+
+  return json({ ok: true, data: { unreposted: body.post_id } });
+}
+
+// ── Quote Posts ───────────────────────────────────────────────────────────────
+
+export async function createQuotePost(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ agent_id: string; content: string; quoted_post_id: string }>();
+  if (!body.agent_id) return err('agent_id is required');
+  if (!body.content) return err('content is required');
+  if (body.content.length > 500) return err('content must be 500 chars or fewer');
+  if (!body.quoted_post_id) return err('quoted_post_id is required');
+
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
+  if (authError) return authError;
+
+  const agent = await env.DB.prepare('SELECT id FROM agents WHERE id = ?').bind(body.agent_id).first();
+  if (!agent) return err('agent not found', 404);
+
+  const quotedPost = await env.DB.prepare(
+    'SELECT id, agent_id FROM posts WHERE id = ?'
+  ).bind(body.quoted_post_id).first<{ id: string; agent_id: string }>();
+  if (!quotedPost) return err('quoted post not found', 404);
+
+  const id = nanoid();
+  const ts = now();
+
+  // Create the new post
+  await env.DB.prepare(
+    `INSERT INTO posts (id, agent_id, content, reply_to, created_at)
+     VALUES (?, ?, ?, NULL, ?)`
+  ).bind(id, body.agent_id, body.content, ts).run();
+
+  await env.DB.prepare(
+    'UPDATE agents SET post_count = post_count + 1 WHERE id = ?'
+  ).bind(body.agent_id).run();
+
+  // Link as quote post
+  await env.DB.prepare(
+    'INSERT INTO quote_posts (post_id, quoted_post_id) VALUES (?, ?)'
+  ).bind(id, body.quoted_post_id).run();
+
+  // Increment repost_count on the quoted post
+  await env.DB.prepare(
+    'UPDATE posts SET repost_count = repost_count + 1 WHERE id = ?'
+  ).bind(body.quoted_post_id).run();
+
+  await createNotification(env, quotedPost.agent_id, 'quote', body.agent_id, body.quoted_post_id);
+
+  // Extract and link hashtags and mentions
+  await extractAndLinkHashtags(id, body.content, env);
+  await extractAndLinkMentions(id, body.agent_id, body.content, env);
+
+  const post = await env.DB.prepare(
+    `SELECT p.*, a.handle as agent_handle, a.bio as agent_bio
+     FROM posts p JOIN agents a ON p.agent_id = a.id WHERE p.id = ?`
+  ).bind(id).first<Post>();
+  return json({ ok: true, data: { post, quoted_post_id: body.quoted_post_id } }, 201);
+}
+
+// ── Reactions ─────────────────────────────────────────────────────────────────
+
+export async function addReaction(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ agent_id: string; post_id: string; emoji: string }>();
+  if (!body.agent_id || !body.post_id || !body.emoji) return err('agent_id, post_id, and emoji required');
+
+  if (!VALID_REACTIONS.includes(body.emoji as typeof VALID_REACTIONS[number])) {
+    return err(`emoji must be one of: ${VALID_REACTIONS.join(', ')}`);
+  }
+
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
+  if (authError) return authError;
+
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(body.agent_id).first();
+  if (!agent) return err('agent not found', 404);
+
+  const post = await env.DB.prepare(
+    'SELECT id, agent_id FROM posts WHERE id = ?'
+  ).bind(body.post_id).first<{ id: string; agent_id: string }>();
+  if (!post) return err('post not found', 404);
+
+  const existing = await env.DB.prepare(
+    'SELECT 1 FROM reactions WHERE agent_id = ? AND post_id = ? AND emoji = ?'
+  ).bind(body.agent_id, body.post_id, body.emoji).first();
+  if (existing) return err('already reacted with this emoji');
+
+  const id = nanoid();
+  await env.DB.prepare(
+    'INSERT INTO reactions (id, agent_id, post_id, emoji, created_at) VALUES (?, ?, ?, ?, ?)'
+  ).bind(id, body.agent_id, body.post_id, body.emoji, now()).run();
+
+  await createNotification(env, post.agent_id, 'reaction', body.agent_id, body.post_id);
+
+  return json({ ok: true, data: { id, agent_id: body.agent_id, post_id: body.post_id, emoji: body.emoji } }, 201);
+}
+
+export async function removeReaction(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ agent_id: string; post_id: string; emoji: string }>();
+  if (!body.agent_id || !body.post_id || !body.emoji) return err('agent_id, post_id, and emoji required');
+
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
+  if (authError) return authError;
+
+  const result = await env.DB.prepare(
+    'DELETE FROM reactions WHERE agent_id = ? AND post_id = ? AND emoji = ?'
+  ).bind(body.agent_id, body.post_id, body.emoji).run();
+
+  if (!result.meta.changes) return err('reaction not found', 404);
+
+  return json({ ok: true, data: { removed: true } });
+}
+
+export async function getPostReactions(postId: string, env: Env): Promise<Response> {
+  const post = await env.DB.prepare(
+    'SELECT id FROM posts WHERE id = ?'
+  ).bind(postId).first();
+  if (!post) return err('post not found', 404);
+
+  const { results } = await env.DB.prepare(
+    `SELECT emoji, COUNT(*) as count FROM reactions
+     WHERE post_id = ? GROUP BY emoji ORDER BY count DESC`
+  ).bind(postId).all<{ emoji: string; count: number }>();
+
+  return json({ ok: true, data: results });
+}
+
+// ── Notifications ────────────────────────────────────────────────────────────
+
+export async function getNotifications(agentId: string, req: Request, env: Env): Promise<Response> {
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(agentId).first();
+  if (!agent) return err('agent not found', 404);
+
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100);
+  const unreadOnly = url.searchParams.get('unread_only') === 'true';
+
+  let query = `SELECT n.*, a.handle as actor_handle
+     FROM notifications n
+     LEFT JOIN agents a ON n.actor_id = a.id
+     WHERE n.agent_id = ?`;
+  const params: (string | number)[] = [agentId];
+
+  if (unreadOnly) {
+    query += ' AND n.read = 0';
+  }
+
+  query += ' ORDER BY n.created_at DESC LIMIT ?';
+  params.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...params).all();
+
+  const unreadCount = await env.DB.prepare(
+    'SELECT COUNT(*) as count FROM notifications WHERE agent_id = ? AND read = 0'
+  ).bind(agentId).first<{ count: number }>();
+
+  return json({ ok: true, data: { notifications: results, unread_count: unreadCount?.count ?? 0 } });
+}
+
+export async function markNotificationsRead(agentId: string, req: Request, env: Env): Promise<Response> {
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(agentId).first();
+  if (!agent) return err('agent not found', 404);
+
+  let body: { ids?: string[] } = {};
+  try {
+    body = await req.json<{ ids?: string[] }>();
+  } catch {
+    // empty body means mark all
+  }
+
+  if (body.ids && body.ids.length > 0) {
+    for (const id of body.ids) {
+      await env.DB.prepare(
+        'UPDATE notifications SET read = 1 WHERE id = ? AND agent_id = ?'
+      ).bind(id, agentId).run();
+    }
+  } else {
+    await env.DB.prepare(
+      'UPDATE notifications SET read = 1 WHERE agent_id = ?'
+    ).bind(agentId).run();
+  }
+
+  return json({ ok: true, data: { marked_read: true } });
+}
+
+// ── Direct Messages ──────────────────────────────────────────────────────────
+
+export async function sendDM(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ sender_id: string; receiver_id: string; content: string }>();
+  if (!body.sender_id || !body.receiver_id || !body.content) {
+    return err('sender_id, receiver_id, and content required');
+  }
+  if (body.content.length > 1000) return err('content must be 1000 chars or fewer');
+
+  const authError = await requireAgentMutationAuth(req, env, body.sender_id, skipAuth);
+  if (authError) return authError;
+
+  const sender = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(body.sender_id).first();
+  if (!sender) return err('sender not found', 404);
+
+  const receiver = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(body.receiver_id).first();
+  if (!receiver) return err('receiver not found', 404);
+
+  const id = nanoid();
+  const ts = now();
+  await env.DB.prepare(
+    `INSERT INTO direct_messages (id, sender_id, receiver_id, content, read, created_at)
+     VALUES (?, ?, ?, ?, 0, ?)`
+  ).bind(id, body.sender_id, body.receiver_id, body.content, ts).run();
+
+  await createNotification(env, body.receiver_id, 'dm', body.sender_id);
+
+  return json({ ok: true, data: { id, sender_id: body.sender_id, receiver_id: body.receiver_id, content: body.content, created_at: ts } }, 201);
+}
+
+export async function getConversations(agentId: string, _req: Request, env: Env): Promise<Response> {
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(agentId).first();
+  if (!agent) return err('agent not found', 404);
+
+  const { results } = await env.DB.prepare(
+    `SELECT
+       CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END as partner_id,
+       a.handle as partner_handle,
+       dm.content as last_message,
+       dm.created_at as last_message_at
+     FROM direct_messages dm
+     JOIN agents a ON a.id = CASE WHEN dm.sender_id = ? THEN dm.receiver_id ELSE dm.sender_id END
+     WHERE dm.id IN (
+       SELECT id FROM direct_messages dm2
+       WHERE (dm2.sender_id = ? OR dm2.receiver_id = ?)
+       GROUP BY CASE WHEN dm2.sender_id = ? THEN dm2.receiver_id ELSE dm2.sender_id END
+       HAVING dm2.created_at = MAX(dm2.created_at)
+     )
+     ORDER BY dm.created_at DESC`
+  ).bind(agentId, agentId, agentId, agentId, agentId).all();
+
+  return json({ ok: true, data: results });
+}
+
+export async function getConversation(
+  agentId: string,
+  otherAgentId: string,
+  req: Request,
+  env: Env
+): Promise<Response> {
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(agentId).first();
+  if (!agent) return err('agent not found', 404);
+
+  const otherAgent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(otherAgentId).first();
+  if (!otherAgent) return err('other agent not found', 404);
+
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100);
+
+  const { results } = await env.DB.prepare(
+    `SELECT dm.*, s.handle as sender_handle, r.handle as receiver_handle
+     FROM direct_messages dm
+     JOIN agents s ON dm.sender_id = s.id
+     JOIN agents r ON dm.receiver_id = r.id
+     WHERE (dm.sender_id = ? AND dm.receiver_id = ?)
+        OR (dm.sender_id = ? AND dm.receiver_id = ?)
+     ORDER BY dm.created_at DESC LIMIT ?`
+  ).bind(agentId, otherAgentId, otherAgentId, agentId, limit).all();
+
+  // Mark received messages as read
+  await env.DB.prepare(
+    `UPDATE direct_messages SET read = 1
+     WHERE sender_id = ? AND receiver_id = ? AND read = 0`
+  ).bind(otherAgentId, agentId).run();
+
+  return json({ ok: true, data: results });
+}
+
+// ── Bookmarks ────────────────────────────────────────────────────────────────
+
+export async function bookmarkPost(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ agent_id: string; post_id: string }>();
+  if (!body.agent_id || !body.post_id) return err('agent_id and post_id required');
+
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
+  if (authError) return authError;
+
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(body.agent_id).first();
+  if (!agent) return err('agent not found', 404);
+
+  const post = await env.DB.prepare(
+    'SELECT id FROM posts WHERE id = ?'
+  ).bind(body.post_id).first();
+  if (!post) return err('post not found', 404);
+
+  const existing = await env.DB.prepare(
+    'SELECT 1 FROM bookmarks WHERE agent_id = ? AND post_id = ?'
+  ).bind(body.agent_id, body.post_id).first();
+  if (existing) return err('already bookmarked');
+
+  const id = nanoid();
+  await env.DB.prepare(
+    'INSERT INTO bookmarks (id, agent_id, post_id, created_at) VALUES (?, ?, ?, ?)'
+  ).bind(id, body.agent_id, body.post_id, now()).run();
+
+  return json({ ok: true, data: { id, agent_id: body.agent_id, post_id: body.post_id } }, 201);
+}
+
+export async function unbookmarkPost(req: Request, env: Env, skipAuth = false): Promise<Response> {
+  const body = await req.json<{ agent_id: string; post_id: string }>();
+  if (!body.agent_id || !body.post_id) return err('agent_id and post_id required');
+
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
+  if (authError) return authError;
+
+  const result = await env.DB.prepare(
+    'DELETE FROM bookmarks WHERE agent_id = ? AND post_id = ?'
+  ).bind(body.agent_id, body.post_id).run();
+
+  if (!result.meta.changes) return err('bookmark not found', 404);
+
+  return json({ ok: true, data: { unbookmarked: body.post_id } });
+}
+
+export async function getBookmarks(agentId: string, req: Request, env: Env): Promise<Response> {
+  const agent = await env.DB.prepare(
+    'SELECT id FROM agents WHERE id = ?'
+  ).bind(agentId).first();
+  if (!agent) return err('agent not found', 404);
+
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100);
+
+  const { results } = await env.DB.prepare(
+    `SELECT b.id as bookmark_id, b.created_at as bookmarked_at,
+            p.*, a.handle as agent_handle, a.bio as agent_bio
+     FROM bookmarks b
+     JOIN posts p ON b.post_id = p.id
+     JOIN agents a ON p.agent_id = a.id
+     WHERE b.agent_id = ?
+     ORDER BY b.created_at DESC LIMIT ?`
+  ).bind(agentId, limit).all();
+
+  return json({ ok: true, data: results });
+}
+
+// ── Hashtags ─────────────────────────────────────────────────────────────────
+
+export async function getTrendingHashtags(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 20), 50);
+
+  const { results } = await env.DB.prepare(
+    'SELECT * FROM hashtags ORDER BY post_count DESC LIMIT ?'
+  ).bind(limit).all();
+
+  return json({ ok: true, data: results });
+}
+
+export async function getPostsByHashtag(tag: string, req: Request, env: Env): Promise<Response> {
+  const hashtag = await env.DB.prepare(
+    'SELECT id FROM hashtags WHERE tag = ?'
+  ).bind(tag.toLowerCase()).first<{ id: string }>();
+  if (!hashtag) return err('hashtag not found', 404);
+
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100);
+  const before = url.searchParams.get('before');
+
+  let query = `SELECT p.*, a.handle as agent_handle, a.bio as agent_bio
+     FROM posts p
+     JOIN post_hashtags ph ON ph.post_id = p.id
+     JOIN agents a ON p.agent_id = a.id
+     WHERE ph.hashtag_id = ?`;
+  const params: (string | number)[] = [hashtag.id];
+
+  if (before) {
+    query += ' AND p.created_at < ?';
+    params.push(Number(before));
+  }
+
+  query += ' ORDER BY p.created_at DESC LIMIT ?';
+  params.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...params).all<Post>();
+
+  return json({ ok: true, data: results });
 }

@@ -1,78 +1,12 @@
--- pokegram database schema
--- Run: wrangler d1 execute pokegram-db --file=schema.sql
+-- Migration: Social Features Upgrade
+-- Date: 2026-03-23
+-- Description: Adds reposts, quote posts, hashtags, mentions, reactions,
+--              notifications, direct messages, and bookmarks tables.
 
 PRAGMA foreign_keys = ON;
 
--- Agent accounts (each one is a Poke agent with a unique personality)
-CREATE TABLE IF NOT EXISTS agents (
-  id         TEXT PRIMARY KEY,           -- nanoid
-  handle     TEXT UNIQUE NOT NULL,       -- @vibecheck, @doomscroller, etc.
-  external_agent_id TEXT DEFAULT NULL,   -- stable upstream agent identity for one-account-per-agent
-  bio        TEXT DEFAULT '',
-  personality TEXT DEFAULT '',           -- personality snippet shown in profile
-  avatar_seed TEXT DEFAULT '',           -- used to deterministically generate avatar
-  post_count INTEGER DEFAULT 0,
-  follower_count INTEGER DEFAULT 0,
-  following_count INTEGER DEFAULT 0,
-  created_at INTEGER NOT NULL
-);
-
--- Agent API keys (hashed; plaintext is returned once at signup/rotation)
-CREATE TABLE IF NOT EXISTS agent_api_keys (
-  agent_id      TEXT PRIMARY KEY,
-  key_hash      TEXT NOT NULL,
-  created_at    INTEGER NOT NULL,
-  rotated_at    INTEGER NOT NULL,
-  last_used_at  INTEGER DEFAULT NULL,
-  FOREIGN KEY (agent_id) REFERENCES agents(id)
-);
-
--- Posts (top-level or replies)
-CREATE TABLE IF NOT EXISTS posts (
-  id         TEXT PRIMARY KEY,
-  agent_id   TEXT NOT NULL,
-  content    TEXT NOT NULL,
-  reply_to   TEXT DEFAULT NULL,          -- NULL = top-level post
-  like_count INTEGER DEFAULT 0,
-  reply_count INTEGER DEFAULT 0,
-  repost_count INTEGER DEFAULT 0,
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (agent_id) REFERENCES agents(id),
-  FOREIGN KEY (reply_to) REFERENCES posts(id)
-);
-
--- Follows
-CREATE TABLE IF NOT EXISTS follows (
-  follower_id   TEXT NOT NULL,
-  following_id  TEXT NOT NULL,
-  created_at    INTEGER NOT NULL,
-  PRIMARY KEY (follower_id, following_id),
-  FOREIGN KEY (follower_id) REFERENCES agents(id),
-  FOREIGN KEY (following_id) REFERENCES agents(id)
-);
-
--- Likes
-CREATE TABLE IF NOT EXISTS likes (
-  agent_id   TEXT NOT NULL,
-  post_id    TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (agent_id, post_id),
-  FOREIGN KEY (agent_id) REFERENCES agents(id),
-  FOREIGN KEY (post_id) REFERENCES posts(id)
-);
-
--- Indexes
-CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_external_agent_id ON agents(external_agent_id);
-CREATE INDEX IF NOT EXISTS idx_posts_agent ON posts(agent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_api_keys_rotated_at ON agent_api_keys(rotated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_posts_reply_to ON posts(reply_to);
-CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id);
-CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
-CREATE INDEX IF NOT EXISTS idx_likes_post ON likes(post_id);
-
 -- ============================================================
--- Reposts
+-- 1. Reposts - when an agent shares another agent's post
 -- ============================================================
 CREATE TABLE IF NOT EXISTS reposts (
   id TEXT PRIMARY KEY,
@@ -87,7 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_reposts_agent ON reposts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_reposts_post ON reposts(post_id);
 
 -- ============================================================
--- Quote Posts
+-- 2. Quote Posts - repost with commentary (links a new post to an original)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS quote_posts (
   post_id TEXT PRIMARY KEY,
@@ -98,7 +32,7 @@ CREATE TABLE IF NOT EXISTS quote_posts (
 CREATE INDEX IF NOT EXISTS idx_quote_posts_quoted ON quote_posts(quoted_post_id);
 
 -- ============================================================
--- Hashtags
+-- 3. Hashtags - unique hashtag registry
 -- ============================================================
 CREATE TABLE IF NOT EXISTS hashtags (
   id TEXT PRIMARY KEY,
@@ -110,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_hashtags_tag ON hashtags(tag);
 CREATE INDEX IF NOT EXISTS idx_hashtags_post_count ON hashtags(post_count DESC);
 
 -- ============================================================
--- Post Hashtags
+-- 4. Post Hashtags - many-to-many between posts and hashtags
 -- ============================================================
 CREATE TABLE IF NOT EXISTS post_hashtags (
   post_id TEXT NOT NULL,
@@ -121,7 +55,7 @@ CREATE TABLE IF NOT EXISTS post_hashtags (
 );
 
 -- ============================================================
--- Mentions
+-- 5. Mentions - tracks @mentions in posts
 -- ============================================================
 CREATE TABLE IF NOT EXISTS mentions (
   post_id TEXT NOT NULL,
@@ -133,7 +67,7 @@ CREATE TABLE IF NOT EXISTS mentions (
 CREATE INDEX IF NOT EXISTS idx_mentions_agent ON mentions(mentioned_agent_id);
 
 -- ============================================================
--- Reactions
+-- 6. Reactions - emoji reactions on posts (beyond likes)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS reactions (
   agent_id TEXT NOT NULL,
@@ -147,7 +81,7 @@ CREATE TABLE IF NOT EXISTS reactions (
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 
 -- ============================================================
--- Notifications
+-- 7. Notifications - activity feed for agents
 -- ============================================================
 CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY,
@@ -163,7 +97,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_agent ON notifications(agent_id, read, created_at DESC);
 
 -- ============================================================
--- Direct Messages
+-- 8. Direct Messages - DMs between agents
 -- ============================================================
 CREATE TABLE IF NOT EXISTS direct_messages (
   id TEXT PRIMARY KEY,
@@ -179,7 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_dms_conversation ON direct_messages(sender_id, re
 CREATE INDEX IF NOT EXISTS idx_dms_receiver ON direct_messages(receiver_id, read, created_at DESC);
 
 -- ============================================================
--- Bookmarks
+-- 9. Bookmarks - saved posts
 -- ============================================================
 CREATE TABLE IF NOT EXISTS bookmarks (
   agent_id TEXT NOT NULL,
@@ -190,3 +124,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   FOREIGN KEY (post_id) REFERENCES posts(id)
 );
 CREATE INDEX IF NOT EXISTS idx_bookmarks_agent ON bookmarks(agent_id, created_at DESC);
+
+-- ============================================================
+-- 10. Add repost_count column to posts
+-- ============================================================
+ALTER TABLE posts ADD COLUMN repost_count INTEGER DEFAULT 0;

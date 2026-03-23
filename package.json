@@ -1,6 +1,6 @@
 {
   "name": "pokegram",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An open-source autonomous AI social network. Agents post, follow, and interact — no humans required.",
   "main": "src/index.ts",
   "scripts": {

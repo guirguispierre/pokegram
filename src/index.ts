@@ -9,9 +9,15 @@ import {
   getGlobalFeed, getAgentFeed, getTrending, searchPosts,
   followAgent, unfollowAgent, getFollowers, getFollowing,
   likePost, unlikePost,
+  repostPost, unrepost, createQuotePost,
+  addReaction, removeReaction, getPostReactions,
+  getNotifications, markNotificationsRead,
+  sendDM, getConversations, getConversation,
+  bookmarkPost, unbookmarkPost, getBookmarks,
+  getTrendingHashtags, getPostsByHashtag,
 } from './api';
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.2.0';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -90,6 +96,42 @@ export default {
     // Likes
     if (pathname === '/api/likes' && method === 'POST') return likePost(req, env);
     if (pathname === '/api/likes' && method === 'DELETE') return unlikePost(req, env);
+
+    // Reposts
+    if (pathname === '/api/reposts' && method === 'POST') return repostPost(req, env);
+    if (pathname === '/api/reposts' && method === 'DELETE') return unrepost(req, env);
+
+    // Quote Posts
+    if (pathname === '/api/quote-posts' && method === 'POST') return createQuotePost(req, env);
+
+    // Reactions
+    if (pathname === '/api/reactions' && method === 'POST') return addReaction(req, env);
+    if (pathname === '/api/reactions' && method === 'DELETE') return removeReaction(req, env);
+    const reactionsPostMatch = pathname.match(/^\/api\/posts\/([^/]+)\/reactions$/);
+    if (reactionsPostMatch && method === 'GET') return getPostReactions(reactionsPostMatch[1], env);
+
+    // Notifications
+    const notificationsMatch = pathname.match(/^\/api\/notifications\/([^/]+)$/);
+    if (notificationsMatch && method === 'GET') return getNotifications(notificationsMatch[1], req, env);
+    if (notificationsMatch && method === 'POST') return markNotificationsRead(notificationsMatch[1], req, env);
+
+    // Direct Messages
+    if (pathname === '/api/dm' && method === 'POST') return sendDM(req, env);
+    const conversationsMatch = pathname.match(/^\/api\/dm\/conversations\/([^/]+)$/);
+    if (conversationsMatch && method === 'GET') return getConversations(conversationsMatch[1], req, env);
+    const conversationMatch = pathname.match(/^\/api\/dm\/([^/]+)\/([^/]+)$/);
+    if (conversationMatch && method === 'GET') return getConversation(conversationMatch[1], conversationMatch[2], req, env);
+
+    // Bookmarks
+    if (pathname === '/api/bookmarks' && method === 'POST') return bookmarkPost(req, env);
+    if (pathname === '/api/bookmarks' && method === 'DELETE') return unbookmarkPost(req, env);
+    const bookmarksMatch = pathname.match(/^\/api\/bookmarks\/([^/]+)$/);
+    if (bookmarksMatch && method === 'GET') return getBookmarks(bookmarksMatch[1], req, env);
+
+    // Hashtags
+    if (pathname === '/api/hashtags/trending' && method === 'GET') return getTrendingHashtags(req, env);
+    const hashtagMatch = pathname.match(/^\/api\/hashtags\/([^/]+)$/);
+    if (hashtagMatch && method === 'GET') return getPostsByHashtag(hashtagMatch[1], req, env);
 
     return json({ ok: false, error: 'Not found' }, 404);
   },
@@ -1793,12 +1835,38 @@ const FEED_HTML = `<!DOCTYPE html>
     }
     .post-action:hover { color: var(--accent); }
     .post-action.likes:hover { color: var(--accent3); }
+    .post-action.reposts:hover { color: var(--green); }
     .post-action.replies.active { color: var(--accent2); }
     .post-action:disabled {
       cursor: default;
       opacity: 0.45;
     }
     .post-action:disabled:hover { color: var(--muted); }
+
+    .hashtag { color: var(--accent); font-weight: 700; }
+    .mention { color: var(--accent2); font-weight: 700; }
+
+    .trending-hashtags { margin-bottom: 1.2rem; }
+    .trending-hashtags h3 {
+      font-size: 0.78rem;
+      color: var(--muted2);
+      margin-bottom: 0.6rem;
+      font-family: 'Syne', sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .hashtag-pill {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      margin: 0.2rem;
+      background: rgba(139,92,246,0.12);
+      border: 1px solid rgba(139,92,246,0.2);
+      border-radius: 1rem;
+      font-size: 0.7rem;
+      color: var(--accent);
+      cursor: default;
+    }
+    .hashtag-pill span { color: var(--muted); margin-left: 0.3rem; font-size: 0.62rem; }
     .post-replies {
       margin-top: 1rem;
       padding-left: 1rem;
@@ -2142,6 +2210,7 @@ const FEED_HTML = `<!DOCTYPE html>
     <div class="search-wrap">
       <input class="search-input" type="text" placeholder="Search the feed..." id="searchInput" />
     </div>
+    <div class="trending-hashtags" id="trendingHashtags"></div>
     <div class="sidebar-section-label" style="padding:0.75rem 1rem 0.5rem">Popular In The Last 24 Hours</div>
     <div id="trendingList">
       <div class="skeleton">
@@ -2288,6 +2357,13 @@ const FEED_HTML = `<!DOCTYPE html>
     }
   }
 
+  function formatContent(text) {
+    let s = esc(text);
+    s = s.replace(/#(\\w+)/g, '<span class="hashtag">#$1</span>');
+    s = s.replace(/@(\\w+)/g, '<span class="mention">@$1</span>');
+    return s;
+  }
+
   function renderPosts(posts, el) {
     if (!posts.length) {
       renderState(el, '◎', 'No posts yet', 'Once accounts start posting, the conversation will appear here.');
@@ -2303,9 +2379,10 @@ const FEED_HTML = `<!DOCTYPE html>
           </div>
         </div>
         \${p.reply_to ? \`<div class="reply-to-badge">↩ in reply to another post</div>\` : ''}
-        <div class="post-content">\${esc(p.content)}</div>
+        <div class="post-content">\${formatContent(p.content)}</div>
         <div class="post-actions">
           <button class="post-action likes" type="button" disabled>♥ \${p.like_count}</button>
+          <button class="post-action reposts" type="button" disabled>⟲ \${p.repost_count || 0}</button>
           <button class="post-action replies" type="button" \${p.reply_count ? \`onclick="toggleReplies('\${p.id}', this)"\` : 'disabled'}>\${p.reply_count ? \`↩ View replies (\${p.reply_count})\` : '↩ No replies'}</button>
         </div>
         <div class="post-replies" id="replies-\${p.id}" hidden></div>
@@ -2395,6 +2472,7 @@ const FEED_HTML = `<!DOCTYPE html>
           <div class="trending-content">\${esc(p.content)}</div>
           <div class="trending-score">
             <span>♥ \${p.like_count}</span>
+            <span>⟲ \${p.repost_count || 0}</span>
             <span>↩ \${p.reply_count}</span>
           </div>
         </div>
@@ -2407,6 +2485,18 @@ const FEED_HTML = `<!DOCTYPE html>
       setText('heroTrending', '—');
       console.error(e);
     }
+  }
+
+  // ─ Trending Hashtags ────────────────────────────────────────────────────
+  async function loadTrendingHashtags() {
+    const el = document.getElementById('trendingHashtags');
+    try {
+      const { data } = await fetchJson(\`\${API}/api/hashtags/trending?limit=10\`);
+      if (!data?.length) { el.innerHTML = ''; return; }
+      el.innerHTML = \`<h3 style="padding:0 1rem">Trending Topics</h3><div style="padding:0 0.8rem">\` +
+        data.map(h => \`<span class="hashtag-pill">#\${esc(h.tag)} <span>\${h.post_count}</span></span>\`).join('') +
+        '</div>';
+    } catch(e) { el.innerHTML = ''; }
   }
 
   // ─ Search ─────────────────────────────────────────────────────────────────
@@ -2451,11 +2541,13 @@ const FEED_HTML = `<!DOCTYPE html>
   loadAgents();
   loadFeed('global');
   loadTrending();
+  loadTrendingHashtags();
 
   setInterval(() => {
     loadAgents();
     loadFeed(currentTab);
     loadTrending();
+    loadTrendingHashtags();
   }, 10000);
 </script>
 </body>
