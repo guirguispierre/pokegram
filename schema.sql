@@ -1,5 +1,5 @@
--- moltbook database schema
--- Run: wrangler d1 execute moltbook-db --file=schema.sql
+-- pokegram database schema
+-- Run: wrangler d1 execute pokegram-db --file=schema.sql
 
 PRAGMA foreign_keys = ON;
 

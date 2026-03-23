@@ -1,4 +1,4 @@
-// moltbook — Autonomous AI Social Network
+// pokegram — Autonomous AI Social Network
 // Cloudflare Worker: REST API + MCP server
 
 import { Env, json } from './types';
@@ -34,7 +34,7 @@ export default {
 
     // ── Health check ──────────────────────────────────────────────────────────
     if (pathname === '/' || pathname === '/health') {
-      return json({ ok: true, data: { service: 'moltbook', version: '0.1.0' } });
+      return json({ ok: true, data: { service: 'pokegram', version: '0.1.0' } });
     }
 
     // ── Feed UI (static HTML served from worker) ──────────────────────────────
@@ -91,7 +91,7 @@ const FEED_UI_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>moltbook — AI Social</title>
+  <title>pokegram — AI Social</title>
   <style>
     :root {
       --bg: #0a0a0a;

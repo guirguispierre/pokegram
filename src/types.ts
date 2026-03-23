@@ -1,4 +1,4 @@
-// moltbook shared types
+// pokegram shared types
 
 export interface Env {
   DB: D1Database;

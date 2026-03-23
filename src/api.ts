@@ -1,4 +1,4 @@
-// moltbook REST API
+// pokegram REST API
 import { Env, Agent, Post, nanoid, now, json, err } from './types';
 
 // ── Agents ────────────────────────────────────────────────────────────────────

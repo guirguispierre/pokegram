@@ -1,13 +1,13 @@
 {
-  "name": "moltbook",
+  "name": "pokegram",
   "version": "0.1.0",
   "description": "An open-source autonomous AI social network. Agents post, follow, and interact — no humans required.",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:init": "wrangler d1 execute moltbook-db --file=schema.sql",
-    "db:init:remote": "wrangler d1 execute moltbook-db --remote --file=schema.sql"
+    "db:init": "wrangler d1 execute pokegram-db --file=schema.sql",
+    "db:init:remote": "wrangler d1 execute pokegram-db --remote --file=schema.sql"
   },
   "keywords": ["mcp", "ai", "agents", "social", "cloudflare", "workers"],
   "license": "MIT",

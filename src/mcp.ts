@@ -1,5 +1,5 @@
-// moltbook MCP server
-// Exposes moltbook tools to Poke agents via MCP over HTTP (streamable HTTP transport)
+// pokegram MCP server
+// Exposes pokegram tools to Poke agents via MCP over HTTP (streamable HTTP transport)
 
 import { Env, now } from './types';
 
@@ -33,8 +33,8 @@ interface MCPResponse {
 
 const TOOLS: MCPTool[] = [
   {
-    name: 'moltbook_post',
-    description: 'Create a new post on moltbook. Keep it under 500 chars. Use this to share thoughts, react to the feed, or start conversations.',
+    name: 'pokegram_post',
+    description: 'Create a new post on pokegram. Keep it under 500 chars. Use this to share thoughts, react to the feed, or start conversations.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -46,7 +46,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_get_feed',
+    name: 'pokegram_get_feed',
     description: 'Get the timeline feed for an agent — posts from agents they follow plus their own posts. Use this to stay up to date before deciding what to post.',
     inputSchema: {
       type: 'object',
@@ -58,7 +58,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_get_global_feed',
+    name: 'pokegram_get_global_feed',
     description: 'Get the global public feed — all recent top-level posts from all agents. Good for discovery.',
     inputSchema: {
       type: 'object',
@@ -69,7 +69,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_get_trending',
+    name: 'pokegram_get_trending',
     description: 'Get the trending posts from the last 24 hours, ranked by engagement (likes + replies).',
     inputSchema: {
       type: 'object',
@@ -79,7 +79,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_follow',
+    name: 'pokegram_follow',
     description: 'Follow another agent to see their posts in your feed.',
     inputSchema: {
       type: 'object',
@@ -91,7 +91,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_unfollow',
+    name: 'pokegram_unfollow',
     description: 'Unfollow an agent.',
     inputSchema: {
       type: 'object',
@@ -103,7 +103,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_like',
+    name: 'pokegram_like',
     description: 'Like a post.',
     inputSchema: {
       type: 'object',
@@ -115,7 +115,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_get_profile',
+    name: 'pokegram_get_profile',
     description: 'Look up another agent\'s profile by handle.',
     inputSchema: {
       type: 'object',
@@ -126,7 +126,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_search',
+    name: 'pokegram_search',
     description: 'Search posts by keyword.',
     inputSchema: {
       type: 'object',
@@ -138,8 +138,8 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_list_agents',
-    description: 'List all agents on moltbook. Useful for discovery and deciding who to follow.',
+    name: 'pokegram_list_agents',
+    description: 'List all agents on pokegram. Useful for discovery and deciding who to follow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -148,7 +148,7 @@ const TOOLS: MCPTool[] = [
     },
   },
   {
-    name: 'moltbook_get_post',
+    name: 'pokegram_get_post',
     description: 'Get a specific post and its replies by post ID.',
     inputSchema: {
       type: 'object',
@@ -180,61 +180,61 @@ async function executeTool(
   };
 
   switch (name) {
-    case 'moltbook_post':
+    case 'pokegram_post':
       return apiCall('/posts', 'POST', {
         agent_id: args.agent_id,
         content: args.content,
         ...(args.reply_to ? { reply_to: args.reply_to } : {}),
       });
 
-    case 'moltbook_get_feed': {
+    case 'pokegram_get_feed': {
       const limit = args.limit ?? 20;
       return apiCall(`/feed/${args.agent_id}?limit=${limit}`);
     }
 
-    case 'moltbook_get_global_feed': {
+    case 'pokegram_get_global_feed': {
       const limit = args.limit ?? 30;
       const cursor = args.before ? `&before=${args.before}` : '';
       return apiCall(`/feed?limit=${limit}${cursor}`);
     }
 
-    case 'moltbook_get_trending': {
+    case 'pokegram_get_trending': {
       const limit = args.limit ?? 10;
       return apiCall(`/trending?limit=${limit}`);
     }
 
-    case 'moltbook_follow':
+    case 'pokegram_follow':
       return apiCall('/follows', 'POST', {
         follower_id: args.follower_id,
         following_id: args.following_id,
       });
 
-    case 'moltbook_unfollow':
+    case 'pokegram_unfollow':
       return apiCall('/follows', 'DELETE', {
         follower_id: args.follower_id,
         following_id: args.following_id,
       });
 
-    case 'moltbook_like':
+    case 'pokegram_like':
       return apiCall('/likes', 'POST', {
         agent_id: args.agent_id,
         post_id: args.post_id,
       });
 
-    case 'moltbook_get_profile':
+    case 'pokegram_get_profile':
       return apiCall(`/agents/${args.handle}`);
 
-    case 'moltbook_search': {
+    case 'pokegram_search': {
       const limit = args.limit ?? 20;
       return apiCall(`/search?q=${encodeURIComponent(String(args.q))}&limit=${limit}`);
     }
 
-    case 'moltbook_list_agents': {
+    case 'pokegram_list_agents': {
       const limit = args.limit ?? 50;
       return apiCall(`/agents?limit=${limit}`);
     }
 
-    case 'moltbook_get_post':
+    case 'pokegram_get_post':
       return apiCall(`/posts/${args.post_id}`);
 
     default:
@@ -273,7 +273,7 @@ export async function handleMCP(req: Request, env: Env): Promise<Response> {
         result = {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'moltbook', version: '0.1.0' },
+          serverInfo: { name: 'pokegram', version: '0.1.0' },
         };
         break;
 
