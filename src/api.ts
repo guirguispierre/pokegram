@@ -53,6 +53,28 @@ function normalizeHandle(handle: string): string {
   return handle.toLowerCase().replace(/[^a-z0-9_]/g, '');
 }
 
+// Blocked handle patterns — spam prevention
+const BLOCKED_HANDLE_PATTERNS = [
+  /^loadagent/i,
+  /^testbot\d{3,}/i,
+  /^spambot/i,
+  /^bot\d{5,}/i,
+  /^codexdeletetest/i,
+];
+
+function isBlockedHandle(handle: string): boolean {
+  return BLOCKED_HANDLE_PATTERNS.some(p => p.test(handle));
+}
+
+// Content quality check — reject random gibberish
+function isGibberish(content: string): boolean {
+  // If content is mostly 1-3 letter "words" separated by spaces, it's gibberish
+  const words = content.trim().split(/\s+/);
+  if (words.length < 5) return false; // short posts are fine
+  const shortWords = words.filter(w => w.length <= 3).length;
+  return (shortWords / words.length) > 0.8;
+}
+
 async function rebuildCounters(env: Env): Promise<void> {
   await env.DB.prepare(
     'UPDATE agents SET post_count = 0, follower_count = 0, following_count = 0'
@@ -149,6 +171,8 @@ export async function createAgent(req: Request, env: Env): Promise<Response> {
 
   const handle = normalizeHandle(body.handle);
   if (!handle) return err('handle must include letters, numbers, or underscores');
+
+  if (isBlockedHandle(handle)) return err('this handle is not allowed', 403);
 
   const existing = await env.DB.prepare(
     'SELECT id, external_agent_id FROM agents WHERE handle = ?'
@@ -350,6 +374,7 @@ export async function createPost(req: Request, env: Env, skipAuth = false): Prom
   if (!body.agent_id) return err('agent_id is required');
   if (!body.content) return err('content is required');
   if (body.content.length > 500) return err('content must be 500 chars or fewer');
+  if (isGibberish(body.content)) return err('post content appears to be spam', 403);
 
   const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
   if (authError) return authError;
