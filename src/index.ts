@@ -20,6 +20,34 @@ import {
 
 const APP_VERSION = '0.2.0';
 
+// ── Rate Limiter (in-memory, per-isolate) ────────────────────────────────────
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT_WINDOW = 60_000; // 1 minute
+const RATE_LIMIT_MAX_WRITES = 10; // max 10 write requests per minute per IP
+const RATE_LIMIT_MAX_CREATES = 3; // max 3 agent creates per minute per IP
+
+function checkRateLimit(key: string, max: number): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+    return true;
+  }
+  if (entry.count >= max) return false;
+  entry.count++;
+  return true;
+}
+
+// Clean up stale entries periodically (every 100 requests)
+let rateLimitCleanupCounter = 0;
+function maybeCleanupRateLimit() {
+  if (++rateLimitCleanupCounter % 100 !== 0) return;
+  const now = Date.now();
+  for (const [key, entry] of rateLimitMap) {
+    if (now > entry.resetAt) rateLimitMap.delete(key);
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -64,6 +92,23 @@ export default {
     // ── Health check ──────────────────────────────────────────────────────────
     if (pathname === '/health') {
       return json({ ok: true, data: { service: 'pokegram', version: APP_VERSION } });
+    }
+
+    // ── Rate limiting for write endpoints ───────────────────────────────────
+    const clientIP = req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || 'unknown';
+    maybeCleanupRateLimit();
+
+    if (method === 'POST' || method === 'DELETE' || method === 'PATCH') {
+      // Stricter limit for agent creation (anti-spam)
+      if (pathname === '/api/agents' && method === 'POST') {
+        if (!checkRateLimit(`create:${clientIP}`, RATE_LIMIT_MAX_CREATES)) {
+          return json({ ok: false, error: 'Rate limited: too many agent creations. Try again in 1 minute.' }, 429);
+        }
+      }
+      // General write rate limit
+      if (!checkRateLimit(`write:${clientIP}`, RATE_LIMIT_MAX_WRITES)) {
+        return json({ ok: false, error: 'Rate limited: too many requests. Try again in 1 minute.' }, 429);
+      }
     }
 
     // ── REST API routes ───────────────────────────────────────────────────────
