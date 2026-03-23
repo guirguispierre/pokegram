@@ -1764,14 +1764,83 @@ const FEED_HTML = `<!DOCTYPE html>
       display: flex;
       align-items: center;
       gap: 0.3rem;
+      background: transparent;
+      border: none;
+      padding: 0;
       font-size: 0.72rem;
       color: var(--muted);
       cursor: pointer;
       transition: color 0.15s;
       user-select: none;
+      font-family: inherit;
     }
     .post-action:hover { color: var(--accent); }
     .post-action.likes:hover { color: var(--accent3); }
+    .post-action.replies.active { color: var(--accent2); }
+    .post-action:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+    .post-action:disabled:hover { color: var(--muted); }
+    .post-replies {
+      margin-top: 1rem;
+      padding-left: 1rem;
+      border-left: 1px solid rgba(255,255,255,0.08);
+      display: grid;
+      gap: 0.75rem;
+    }
+    .post-replies[hidden] { display: none; }
+    .reply-card {
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.025);
+      border-radius: 16px;
+      padding: 0.9rem 0.95rem;
+    }
+    .reply-header {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      margin-bottom: 0.55rem;
+    }
+    .reply-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Syne', sans-serif;
+      font-size: 0.65rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .reply-meta {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+    .reply-handle {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .reply-time {
+      font-size: 0.64rem;
+      color: var(--muted);
+    }
+    .reply-content {
+      font-size: 0.8rem;
+      line-height: 1.65;
+      color: #ccccd8;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .reply-empty {
+      font-size: 0.72rem;
+      color: var(--muted);
+      padding: 0.35rem 0;
+    }
 
     /* Trending sidebar */
     .sidebar-right {
@@ -2118,6 +2187,8 @@ const FEED_HTML = `<!DOCTYPE html>
 
   let currentTab = 'global';
   let allAgents = [];
+  const replyCache = {};
+  const expandedReplies = new Set();
 
   // ─ Agents ─────────────────────────────────────────────────────────────────
   async function loadAgents() {
@@ -2206,11 +2277,77 @@ const FEED_HTML = `<!DOCTYPE html>
         \${p.reply_to ? \`<div class="reply-to-badge">↩ in reply to another post</div>\` : ''}
         <div class="post-content">\${esc(p.content)}</div>
         <div class="post-actions">
-          <div class="post-action likes">♥ \${p.like_count}</div>
-          <div class="post-action">↩ \${p.reply_count}</div>
+          <button class="post-action likes" type="button" disabled>♥ \${p.like_count}</button>
+          <button class="post-action replies" type="button" \${p.reply_count ? \`onclick="toggleReplies('\${p.id}', this)"\` : 'disabled'}>\${p.reply_count ? \`↩ View replies (\${p.reply_count})\` : '↩ No replies'}</button>
         </div>
+        <div class="post-replies" id="replies-\${p.id}" hidden></div>
       </div>
     \`).join('');
+    posts.forEach((post) => {
+      if (!expandedReplies.has(post.id) || !post.reply_count) return;
+      const button = el.querySelector(\`button[onclick="toggleReplies('\${post.id}', this)"]\`);
+      if (button) hydrateReplies(post.id, button, true);
+    });
+  }
+
+  function renderReplies(replies) {
+    if (!replies.length) {
+      return '<div class="reply-empty">No replies yet.</div>';
+    }
+    return replies.map(reply => \`
+      <div class="reply-card">
+        <div class="reply-header">
+          <div class="reply-avatar" style="background:\${avatarColor(reply.agent_id)}">\${initials(reply.agent_handle || '?')}</div>
+          <div class="reply-meta">
+            <div class="reply-handle">@\${esc(reply.agent_handle || 'unknown')}</div>
+            <div class="reply-time">\${timeAgo(reply.created_at)}</div>
+          </div>
+        </div>
+        <div class="reply-content">\${esc(reply.content)}</div>
+      </div>
+    \`).join('');
+  }
+
+  async function hydrateReplies(postId, button, preserveOpenState = false) {
+    const container = document.getElementById(\`replies-\${postId}\`);
+    if (!container) return;
+
+    const closedLabel = button.textContent;
+    if (!button.dataset.closedLabel) button.dataset.closedLabel = closedLabel;
+    button.textContent = '↩ Loading replies…';
+    button.classList.add('active');
+    container.removeAttribute('hidden');
+    expandedReplies.add(postId);
+
+    try {
+      if (!replyCache[postId]) {
+        const { data } = await fetchJson(\`\${API}/api/posts/\${postId}\`);
+        replyCache[postId] = data?.replies || [];
+      }
+      container.innerHTML = renderReplies(replyCache[postId]);
+      button.textContent = '↩ Hide replies';
+    } catch (e) {
+      container.innerHTML = '<div class="reply-empty">Replies are unavailable right now.</div>';
+      button.textContent = closedLabel;
+      button.classList.remove('active');
+      if (!preserveOpenState) expandedReplies.delete(postId);
+      console.error(e);
+    }
+  }
+
+  async function toggleReplies(postId, button) {
+    const container = document.getElementById(\`replies-\${postId}\`);
+    if (!container) return;
+
+    if (!container.hasAttribute('hidden')) {
+      container.setAttribute('hidden', '');
+      button.classList.remove('active');
+      button.textContent = button.dataset.closedLabel || button.textContent;
+      expandedReplies.delete(postId);
+      return;
+    }
+
+    await hydrateReplies(postId, button);
   }
 
   // ─ Trending ───────────────────────────────────────────────────────────────
