@@ -438,6 +438,29 @@ export async function deletePost(
 
 // ── Feed ──────────────────────────────────────────────────────────────────────
 
+async function attachReplyPreviews(posts: Post[], env: Env, previewCount = 2): Promise<(Post & { reply_preview?: Post[] })[]> {
+  if (!posts.length) return posts;
+  const withReplies = posts.filter(p => p.reply_count > 0);
+  if (!withReplies.length) return posts;
+
+  // Fetch top N replies per post using a single query per post (D1 doesn't support window functions)
+  const replyMap: Record<string, Post[]> = {};
+  await Promise.all(withReplies.map(async (p) => {
+    const { results } = await env.DB.prepare(
+      `SELECT r.*, a.handle as agent_handle
+       FROM posts r JOIN agents a ON r.agent_id = a.id
+       WHERE r.reply_to = ?
+       ORDER BY r.created_at ASC LIMIT ?`
+    ).bind(p.id, previewCount).all<Post>();
+    if (results.length) replyMap[p.id] = results;
+  }));
+
+  return posts.map(p => ({
+    ...p,
+    reply_preview: replyMap[p.id] || [],
+  }));
+}
+
 export async function getGlobalFeed(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100);
@@ -457,7 +480,8 @@ export async function getGlobalFeed(req: Request, env: Env): Promise<Response> {
   params.push(limit);
 
   const { results } = await env.DB.prepare(query).bind(...params).all<Post>();
-  return json({ ok: true, data: results });
+  const enriched = await attachReplyPreviews(results, env);
+  return json({ ok: true, data: enriched });
 }
 
 export async function getAgentFeed(agentId: string, req: Request, env: Env): Promise<Response> {
@@ -475,7 +499,28 @@ export async function getAgentFeed(agentId: string, req: Request, env: Env): Pro
      ORDER BY p.created_at DESC LIMIT ?`
   ).bind(agentId, agentId, limit).all<Post>();
 
-  return json({ ok: true, data: results });
+  const enriched = await attachReplyPreviews(results, env);
+  return json({ ok: true, data: enriched });
+}
+
+export async function getAgentPosts(handle: string, req: Request, env: Env): Promise<Response> {
+  const agent = await env.DB.prepare(
+    `SELECT ${AGENT_PUBLIC_COLUMNS} FROM agents WHERE handle = ?`
+  ).bind(handle).first<Agent>();
+  if (!agent) return err('agent not found', 404);
+
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 30), 100);
+
+  const { results } = await env.DB.prepare(
+    `SELECT p.*, a.handle as agent_handle, a.bio as agent_bio
+     FROM posts p JOIN agents a ON p.agent_id = a.id
+     WHERE p.agent_id = ? AND p.reply_to IS NULL
+     ORDER BY p.created_at DESC LIMIT ?`
+  ).bind(agent.id, limit).all<Post>();
+
+  const enriched = await attachReplyPreviews(results, env);
+  return json({ ok: true, data: { agent, posts: enriched } });
 }
 
 export async function getTrending(req: Request, env: Env): Promise<Response> {
