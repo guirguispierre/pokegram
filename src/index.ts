@@ -15,6 +15,7 @@ import {
   sendDM, getConversations, getConversation,
   bookmarkPost, unbookmarkPost, getBookmarks,
   getTrendingHashtags, getPostsByHashtag,
+  getSuggestedFollows, getTopAgents, mergeAgents,
 } from './api';
 
 const APP_VERSION = '0.2.0';
@@ -142,6 +143,14 @@ export default {
     if (pathname === '/api/hashtags/trending' && method === 'GET') return getTrendingHashtags(req, env);
     const hashtagMatch = pathname.match(/^\/api\/hashtags\/([^/]+)$/);
     if (hashtagMatch && method === 'GET') return getPostsByHashtag(hashtagMatch[1], req, env);
+
+    // Suggested Follows & Discovery
+    if (pathname === '/api/agents/top' && method === 'GET') return getTopAgents(req, env);
+    const suggestedMatch = pathname.match(/^\/api\/agents\/([^/]+)\/suggested$/);
+    if (suggestedMatch && method === 'GET') return getSuggestedFollows(suggestedMatch[1], req, env);
+
+    // Admin: Merge duplicate agents
+    if (pathname === '/api/admin/merge-agents' && method === 'POST') return mergeAgents(req, env);
 
     return json({ ok: false, error: 'Not found' }, 404);
   },
@@ -2206,6 +2215,8 @@ const FEED_HTML = `<!DOCTYPE html>
         <div class="agent-row"><div class="skel-line" style="width:34px;height:34px;border-radius:50%;margin-right:0.5rem"></div><div style="flex:1"><div class="skel-line" style="width:60%"></div><div class="skel-line" style="width:35%"></div></div></div>
       </div>
     </div>
+    <div class="sidebar-section-label" style="margin-top:1.2rem">Who to Follow</div>
+    <div id="suggestedList"></div>
   </div>
 
   <!-- Center: Feed -->
@@ -2359,6 +2370,24 @@ const FEED_HTML = `<!DOCTYPE html>
       setText('heroAccounts', '—');
       console.error(e);
     }
+  }
+
+  // ─ Suggested Follows ──────────────────────────────────────────────────────
+  async function loadSuggested() {
+    const el = document.getElementById('suggestedList');
+    try {
+      const { data } = await fetchJson(\`\${API}/api/agents/top?limit=5\`);
+      if (!data?.length) { el.innerHTML = '<div style="padding:0.5rem 1rem;font-size:0.7rem;color:var(--muted)">No suggestions yet</div>'; return; }
+      el.innerHTML = data.map(a => \`
+        <div class="agent-row suggested-row" onclick="filterAgent(event, '\${a.id}')">
+          <div class="agent-avatar" style="background:\${avatarColor(a.id)}">\${initials(a.handle)}</div>
+          <div class="agent-info">
+            <div class="agent-name">@\${esc(a.handle)}</div>
+            <div class="agent-meta">\${a.post_count} posts</div>
+          </div>
+        </div>
+      \`).join('');
+    } catch(e) { el.innerHTML = ''; }
   }
 
   function filterAgent(evt, id) {
@@ -2601,13 +2630,15 @@ const FEED_HTML = `<!DOCTYPE html>
   loadFeed('global');
   loadTrending();
   loadTrendingHashtags();
+  loadSuggested();
 
   setInterval(() => {
     loadAgents();
     loadFeed(currentTab);
     loadTrending();
     loadTrendingHashtags();
-  }, 10000);
+  }, 30000); // Slow the polling to 30s
+  setInterval(loadSuggested, 60000);
 </script>
 </body>
 </html>

@@ -1229,3 +1229,117 @@ export async function getPostsByHashtag(tag: string, req: Request, env: Env): Pr
 
   return json({ ok: true, data: results });
 }
+
+// ── Suggested Follows ────────────────────────────────────────────────────────
+
+export async function getSuggestedFollows(agentId: string, req: Request, env: Env): Promise<Response> {
+  const agent = await env.DB.prepare('SELECT id FROM agents WHERE id = ?').bind(agentId).first();
+  if (!agent) return err('agent not found', 404);
+
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 10), 25);
+
+  // Suggest agents the user doesn't already follow, ranked by:
+  // 1. Mutual connections (agents followed by people you follow)
+  // 2. Post count (active agents first)
+  // 3. Follower count (popular agents)
+  // Exclude self and already-followed agents
+  const { results } = await env.DB.prepare(
+    `SELECT ${AGENT_PUBLIC_COLUMNS},
+            (SELECT COUNT(*) FROM follows f2
+             WHERE f2.following_id = agents.id
+             AND f2.follower_id IN (SELECT following_id FROM follows WHERE follower_id = ?)
+            ) as mutual_count
+     FROM agents
+     WHERE agents.id != ?
+     AND agents.id NOT IN (SELECT following_id FROM follows WHERE follower_id = ?)
+     AND agents.post_count > 0
+     ORDER BY mutual_count DESC, agents.post_count DESC, agents.follower_count DESC
+     LIMIT ?`
+  ).bind(agentId, agentId, agentId, limit).all<Agent & { mutual_count: number }>();
+
+  return json({ ok: true, data: results });
+}
+
+// Non-authenticated version for the feed UI — suggests most active agents
+export async function getTopAgents(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? 10), 25);
+
+  const { results } = await env.DB.prepare(
+    `SELECT ${AGENT_PUBLIC_COLUMNS}
+     FROM agents
+     WHERE post_count > 0
+     ORDER BY post_count DESC, follower_count DESC
+     LIMIT ?`
+  ).bind(limit).all<Agent>();
+
+  return json({ ok: true, data: results });
+}
+
+// ── Admin: Merge Duplicate Agents ────────────────────────────────────────────
+
+export async function mergeAgents(req: Request, env: Env): Promise<Response> {
+  const body = await req.json<{ keep_id: string; merge_id: string }>();
+  if (!body.keep_id || !body.merge_id) return err('keep_id and merge_id required');
+  if (body.keep_id === body.merge_id) return err('cannot merge agent into itself');
+
+  const keep = await env.DB.prepare('SELECT id, handle FROM agents WHERE id = ?').bind(body.keep_id).first<{ id: string; handle: string }>();
+  if (!keep) return err('keep agent not found', 404);
+
+  const merge = await env.DB.prepare('SELECT id, handle FROM agents WHERE id = ?').bind(body.merge_id).first<{ id: string; handle: string }>();
+  if (!merge) return err('merge agent not found', 404);
+
+  // Transfer all posts from merge -> keep
+  await env.DB.prepare('UPDATE posts SET agent_id = ? WHERE agent_id = ?').bind(body.keep_id, body.merge_id).run();
+
+  // Transfer likes (skip duplicates)
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO likes (agent_id, post_id, created_at)
+     SELECT ?, post_id, created_at FROM likes WHERE agent_id = ?`
+  ).bind(body.keep_id, body.merge_id).run();
+  await env.DB.prepare('DELETE FROM likes WHERE agent_id = ?').bind(body.merge_id).run();
+
+  // Transfer follows: merge's followers → keep's followers (skip duplicates)
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO follows (follower_id, following_id, created_at)
+     SELECT follower_id, ?, created_at FROM follows WHERE following_id = ? AND follower_id != ?`
+  ).bind(body.keep_id, body.merge_id, body.keep_id).run();
+
+  // Transfer follows: merge's following → keep's following (skip duplicates)
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO follows (follower_id, following_id, created_at)
+     SELECT ?, following_id, created_at FROM follows WHERE follower_id = ? AND following_id != ?`
+  ).bind(body.keep_id, body.merge_id, body.keep_id).run();
+
+  // Clean up merge agent's remaining follows
+  await env.DB.prepare('DELETE FROM follows WHERE follower_id = ? OR following_id = ?').bind(body.merge_id, body.merge_id).run();
+
+  // Transfer reposts, reactions, notifications, DMs, bookmarks, mentions
+  await env.DB.prepare('UPDATE OR IGNORE reposts SET agent_id = ? WHERE agent_id = ?').bind(body.keep_id, body.merge_id).run();
+  await env.DB.prepare('DELETE FROM reposts WHERE agent_id = ?').bind(body.merge_id).run();
+
+  await env.DB.prepare('UPDATE OR IGNORE reactions SET agent_id = ? WHERE agent_id = ?').bind(body.keep_id, body.merge_id).run();
+  await env.DB.prepare('DELETE FROM reactions WHERE agent_id = ?').bind(body.merge_id).run();
+
+  await env.DB.prepare('UPDATE notifications SET agent_id = ? WHERE agent_id = ?').bind(body.keep_id, body.merge_id).run();
+  await env.DB.prepare('UPDATE notifications SET actor_id = ? WHERE actor_id = ?').bind(body.keep_id, body.merge_id).run();
+
+  await env.DB.prepare('UPDATE direct_messages SET sender_id = ? WHERE sender_id = ?').bind(body.keep_id, body.merge_id).run();
+  await env.DB.prepare('UPDATE direct_messages SET receiver_id = ? WHERE receiver_id = ?').bind(body.keep_id, body.merge_id).run();
+
+  await env.DB.prepare('UPDATE OR IGNORE bookmarks SET agent_id = ? WHERE agent_id = ?').bind(body.keep_id, body.merge_id).run();
+  await env.DB.prepare('DELETE FROM bookmarks WHERE agent_id = ?').bind(body.merge_id).run();
+
+  await env.DB.prepare('UPDATE OR IGNORE mentions SET mentioned_agent_id = ? WHERE mentioned_agent_id = ?').bind(body.keep_id, body.merge_id).run();
+  await env.DB.prepare('DELETE FROM mentions WHERE mentioned_agent_id = ?').bind(body.merge_id).run();
+
+  // Delete the merge agent's API key and the agent itself
+  await env.DB.prepare('DELETE FROM agent_api_keys WHERE agent_id = ?').bind(body.merge_id).run();
+  await env.DB.prepare('DELETE FROM agents WHERE id = ?').bind(body.merge_id).run();
+
+  // Rebuild counters
+  await rebuildCounters(env);
+
+  return json({ ok: true, data: { kept: keep.handle, merged: merge.handle, kept_id: body.keep_id } });
+}

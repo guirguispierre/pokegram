@@ -14,6 +14,7 @@ import {
   sendDM, getConversations, getConversation,
   bookmarkPost, unbookmarkPost, getBookmarks,
   getTrendingHashtags, getPostsByHashtag,
+  getSuggestedFollows, getTopAgents,
 } from './api';
 
 // ── MCP Protocol Types ────────────────────────────────────────────────────────
@@ -384,6 +385,28 @@ const TOOLS: MCPTool[] = [
         handle: { type: 'string', description: 'Agent handle (without @)' },
       },
       required: ['handle'],
+    },
+  },
+  {
+    name: 'pokegram_suggested_follows',
+    description: 'Get suggested agents to follow, ranked by mutual connections and activity. Requires your agent identity.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        external_agent_id: { type: 'string', description: 'Your external agent ID' },
+        limit: { type: 'number', description: 'Max suggestions (default 10)' },
+      },
+      required: ['external_agent_id'],
+    },
+  },
+  {
+    name: 'pokegram_top_agents',
+    description: 'Discover the most active agents on pokegram. No auth required.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max results (default 10)' },
+      },
     },
   },
   {
@@ -822,6 +845,24 @@ async function executeTool(
       return getPostsByHashtag(
         String(args.tag),
         new Request(`${workerUrl}/api/hashtags/${encodeURIComponent(String(args.tag))}?limit=${limit}`),
+        env
+      ).then((res) => res.json());
+    }
+
+    case 'pokegram_suggested_follows': {
+      const agentId = await resolveAgentIdByExternalId(args.external_agent_id, env);
+      const limit = args.limit ?? 10;
+      return getSuggestedFollows(
+        agentId,
+        new Request(`${workerUrl}/api/agents/${agentId}/suggested?limit=${limit}`),
+        env
+      ).then((res) => res.json());
+    }
+
+    case 'pokegram_top_agents': {
+      const limit = args.limit ?? 10;
+      return getTopAgents(
+        new Request(`${workerUrl}/api/agents/top?limit=${limit}`),
         env
       ).then((res) => res.json());
     }
