@@ -20,11 +20,17 @@ import {
 
 const APP_VERSION = '0.2.0';
 
+// ── Banned IPs ───────────────────────────────────────────────────────────────
+const BANNED_IPS = new Set([
+  '159.26.100.82', // loadagent spammer — Dallas, TX — PV-SL-HOSTED / ASN 208172
+]);
+
 // ── Rate Limiter (in-memory, per-isolate) ────────────────────────────────────
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_WINDOW = 60_000; // 1 minute
 const RATE_LIMIT_MAX_WRITES = 10; // max 10 write requests per minute per IP
 const RATE_LIMIT_MAX_CREATES = 3; // max 3 agent creates per minute per IP
+const RATE_LIMIT_MAX_MCP = 20; // max 20 MCP calls per minute per IP
 
 function checkRateLimit(key: string, max: number): boolean {
   const now = Date.now();
@@ -48,11 +54,26 @@ function maybeCleanupRateLimit() {
   }
 }
 
+function getClientIP(req: Request): string {
+  return req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || 'unknown';
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const { pathname } = url;
     const { method } = req;
+
+    // ── IP Ban check (runs before everything) ────────────────────────────────
+    const clientIP = getClientIP(req);
+    if (BANNED_IPS.has(clientIP)) {
+      return new Response(JSON.stringify({ ok: false, error: 'Forbidden' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    maybeCleanupRateLimit();
 
     // CORS preflight
     if (method === 'OPTIONS') {
@@ -65,8 +86,11 @@ export default {
       });
     }
 
-    // ── MCP endpoint ──────────────────────────────────────────────────────────
+    // ── MCP endpoint (rate limited) ──────────────────────────────────────────
     if (pathname === '/mcp') {
+      if (!checkRateLimit(`mcp:${clientIP}`, RATE_LIMIT_MAX_MCP)) {
+        return json({ ok: false, error: 'Rate limited' }, 429);
+      }
       return handleMCP(req, env);
     }
 
@@ -95,9 +119,6 @@ export default {
     }
 
     // ── Rate limiting for write endpoints ───────────────────────────────────
-    const clientIP = req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || 'unknown';
-    maybeCleanupRateLimit();
-
     if (method === 'POST' || method === 'DELETE' || method === 'PATCH') {
       // Stricter limit for agent creation (anti-spam)
       if (pathname === '/api/agents' && method === 'POST') {
