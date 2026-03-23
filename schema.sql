@@ -7,6 +7,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS agents (
   id         TEXT PRIMARY KEY,           -- nanoid
   handle     TEXT UNIQUE NOT NULL,       -- @vibecheck, @doomscroller, etc.
+  external_agent_id TEXT DEFAULT NULL,   -- stable upstream agent identity for one-account-per-agent
   bio        TEXT DEFAULT '',
   personality TEXT DEFAULT '',           -- personality snippet shown in profile
   avatar_seed TEXT DEFAULT '',           -- used to deterministically generate avatar
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS likes (
 );
 
 -- Indexes
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_external_agent_id ON agents(external_agent_id);
 CREATE INDEX IF NOT EXISTS idx_posts_agent ON posts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_api_keys_rotated_at ON agent_api_keys(rotated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_reply_to ON posts(reply_to);

@@ -12,6 +12,41 @@ interface AgentApiKeyRotationPayload {
   api_key: string;
 }
 
+interface CreateAgentBody {
+  handle: string;
+  bio?: string;
+  personality?: string;
+  avatar_seed?: string;
+  external_agent_id?: string;
+}
+
+interface AgentIdentityRow {
+  id: string;
+  external_agent_id: string | null;
+}
+
+const AGENT_PUBLIC_COLUMNS = `
+  id,
+  handle,
+  bio,
+  personality,
+  avatar_seed,
+  post_count,
+  follower_count,
+  following_count,
+  created_at
+`;
+
+async function requireAgentMutationAuth(
+  req: Request,
+  env: Env,
+  agentId: string,
+  skipAuth = false
+): Promise<Response | null> {
+  if (skipAuth) return null;
+  return requireAgentAuth(req, env, agentId);
+}
+
 function normalizeHandle(handle: string): string {
   return handle.toLowerCase().replace(/[^a-z0-9_]/g, '');
 }
@@ -66,53 +101,96 @@ async function deletePostTree(postId: string, env: Env): Promise<boolean> {
 // ── Agents ────────────────────────────────────────────────────────────────────
 
 export async function createAgent(req: Request, env: Env): Promise<Response> {
-  const body = await req.json<Partial<Agent>>();
+  const body = await req.json<CreateAgentBody>();
   if (!body.handle) return err('handle is required');
   if (body.handle.length > 32) return err('handle must be 32 chars or fewer');
   if ((body.bio?.length ?? 0) > 280) return err('bio must be 280 chars or fewer');
   if ((body.personality?.length ?? 0) > 1000) return err('personality must be 1000 chars or fewer');
 
+  const externalAgentId = typeof body.external_agent_id === 'string'
+    ? body.external_agent_id.trim()
+    : '';
+  if (body.external_agent_id !== undefined && !externalAgentId) {
+    return err('external_agent_id must not be empty');
+  }
+  if (externalAgentId.length > 128) {
+    return err('external_agent_id must be 128 chars or fewer');
+  }
+
+  if (externalAgentId) {
+    const existingAgent = await env.DB.prepare(
+      `SELECT ${AGENT_PUBLIC_COLUMNS} FROM agents WHERE external_agent_id = ?`
+    ).bind(externalAgentId).first<Agent>();
+
+    if (existingAgent) {
+      const apiKey = await issueAgentApiKey(env, existingAgent.id);
+      return json<AgentAuthPayload>({ ok: true, data: { agent: existingAgent, api_key: apiKey } });
+    }
+  }
+
   const handle = normalizeHandle(body.handle);
   if (!handle) return err('handle must include letters, numbers, or underscores');
 
   const existing = await env.DB.prepare(
-    'SELECT id FROM agents WHERE handle = ?'
-  ).bind(handle).first();
-  if (existing) return err('handle already exists', 409);
+    'SELECT id, external_agent_id FROM agents WHERE handle = ?'
+  ).bind(handle).first<AgentIdentityRow>();
+  if (existing) {
+    if (externalAgentId && !existing.external_agent_id) {
+      await env.DB.prepare(
+        'UPDATE agents SET external_agent_id = ? WHERE id = ?'
+      ).bind(externalAgentId, existing.id).run();
+
+      const claimedAgent = await env.DB.prepare(
+        `SELECT ${AGENT_PUBLIC_COLUMNS} FROM agents WHERE id = ?`
+      ).bind(existing.id).first<Agent>();
+      const apiKey = await issueAgentApiKey(env, existing.id);
+      return json<AgentAuthPayload>({ ok: true, data: { agent: claimedAgent!, api_key: apiKey } });
+    }
+
+    return err('handle already exists', 409);
+  }
 
   const id = nanoid();
   await env.DB.prepare(
-    `INSERT INTO agents (id, handle, bio, personality, avatar_seed, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO agents (id, handle, external_agent_id, bio, personality, avatar_seed, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     id,
     handle,
+    externalAgentId || null,
     body.bio ?? '',
     body.personality ?? '',
     body.avatar_seed ?? nanoid(8),
     now()
   ).run();
 
-  const agent = await env.DB.prepare('SELECT * FROM agents WHERE id = ?').bind(id).first<Agent>();
+  const agent = await env.DB.prepare(
+    `SELECT ${AGENT_PUBLIC_COLUMNS} FROM agents WHERE id = ?`
+  ).bind(id).first<Agent>();
   const apiKey = await issueAgentApiKey(env, id);
   return json<AgentAuthPayload>({ ok: true, data: { agent: agent!, api_key: apiKey } }, 201);
 }
 
 export async function getAgent(handle: string, env: Env): Promise<Response> {
   const agent = await env.DB.prepare(
-    'SELECT * FROM agents WHERE handle = ?'
+    `SELECT ${AGENT_PUBLIC_COLUMNS} FROM agents WHERE handle = ?`
   ).bind(handle).first<Agent>();
   if (!agent) return err('agent not found', 404);
   return json({ ok: true, data: agent });
 }
 
-export async function updateAgent(agentId: string, req: Request, env: Env): Promise<Response> {
+export async function updateAgent(
+  agentId: string,
+  req: Request,
+  env: Env,
+  skipAuth = false
+): Promise<Response> {
   const agent = await env.DB.prepare(
     'SELECT * FROM agents WHERE id = ?'
   ).bind(agentId).first<Agent>();
   if (!agent) return err('agent not found', 404);
 
-  const authError = await requireAgentAuth(req, env, agentId);
+  const authError = await requireAgentMutationAuth(req, env, agentId, skipAuth);
   if (authError) return authError;
 
   const body = await req.json<Partial<Agent>>();
@@ -158,7 +236,7 @@ export async function updateAgent(agentId: string, req: Request, env: Env): Prom
   ).bind(...values, agentId).run();
 
   const updated = await env.DB.prepare(
-    'SELECT * FROM agents WHERE id = ?'
+    `SELECT ${AGENT_PUBLIC_COLUMNS} FROM agents WHERE id = ?`
   ).bind(agentId).first<Agent>();
   return json({ ok: true, data: updated });
 }
@@ -182,13 +260,18 @@ export async function rotateAgentApiKey(agentId: string, req: Request, env: Env)
   return json<AgentApiKeyRotationPayload>({ ok: true, data: { agent_id: agentId, api_key: apiKey } });
 }
 
-export async function deleteAgent(agentId: string, req: Request, env: Env): Promise<Response> {
+export async function deleteAgent(
+  agentId: string,
+  req: Request,
+  env: Env,
+  skipAuth = false
+): Promise<Response> {
   const agent = await env.DB.prepare(
     'SELECT * FROM agents WHERE id = ?'
   ).bind(agentId).first<Agent>();
   if (!agent) return err('agent not found', 404);
 
-  const authError = await requireAgentAuth(req, env, agentId);
+  const authError = await requireAgentMutationAuth(req, env, agentId, skipAuth);
   if (authError) return authError;
 
   const { results: ownedPosts } = await env.DB.prepare(
@@ -218,20 +301,20 @@ export async function listAgents(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100);
   const { results } = await env.DB.prepare(
-    'SELECT * FROM agents ORDER BY created_at DESC LIMIT ?'
+    `SELECT ${AGENT_PUBLIC_COLUMNS} FROM agents ORDER BY created_at DESC LIMIT ?`
   ).bind(limit).all<Agent>();
   return json({ ok: true, data: results });
 }
 
 // ── Posts ─────────────────────────────────────────────────────────────────────
 
-export async function createPost(req: Request, env: Env): Promise<Response> {
+export async function createPost(req: Request, env: Env, skipAuth = false): Promise<Response> {
   const body = await req.json<{ agent_id: string; content: string; reply_to?: string }>();
   if (!body.agent_id) return err('agent_id is required');
   if (!body.content) return err('content is required');
   if (body.content.length > 500) return err('content must be 500 chars or fewer');
 
-  const authError = await requireAgentAuth(req, env, body.agent_id);
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
   if (authError) return authError;
 
   const agent = await env.DB.prepare('SELECT id FROM agents WHERE id = ?').bind(body.agent_id).first();
@@ -285,13 +368,18 @@ export async function getPost(id: string, env: Env): Promise<Response> {
   return json({ ok: true, data: { post, replies } });
 }
 
-export async function deletePost(id: string, req: Request, env: Env): Promise<Response> {
+export async function deletePost(
+  id: string,
+  req: Request,
+  env: Env,
+  skipAuth = false
+): Promise<Response> {
   const post = await env.DB.prepare(
     'SELECT agent_id FROM posts WHERE id = ?'
   ).bind(id).first<{ agent_id: string }>();
   if (!post) return err('post not found', 404);
 
-  const authError = await requireAgentAuth(req, env, post.agent_id);
+  const authError = await requireAgentMutationAuth(req, env, post.agent_id, skipAuth);
   if (authError) return authError;
 
   const deleted = await deletePostTree(id, env);
@@ -376,12 +464,12 @@ export async function searchPosts(req: Request, env: Env): Promise<Response> {
 
 // ── Follows ───────────────────────────────────────────────────────────────────
 
-export async function followAgent(req: Request, env: Env): Promise<Response> {
+export async function followAgent(req: Request, env: Env, skipAuth = false): Promise<Response> {
   const body = await req.json<{ follower_id: string; following_id: string }>();
   if (!body.follower_id || !body.following_id) return err('follower_id and following_id required');
   if (body.follower_id === body.following_id) return err('agents cannot follow themselves');
 
-  const authError = await requireAgentAuth(req, env, body.follower_id);
+  const authError = await requireAgentMutationAuth(req, env, body.follower_id, skipAuth);
   if (authError) return authError;
 
   const follower = await env.DB.prepare(
@@ -413,11 +501,11 @@ export async function followAgent(req: Request, env: Env): Promise<Response> {
   return json({ ok: true, data: { follower: body.follower_id, following: body.following_id } }, 201);
 }
 
-export async function unfollowAgent(req: Request, env: Env): Promise<Response> {
+export async function unfollowAgent(req: Request, env: Env, skipAuth = false): Promise<Response> {
   const body = await req.json<{ follower_id: string; following_id: string }>();
   if (!body.follower_id || !body.following_id) return err('follower_id and following_id required');
 
-  const authError = await requireAgentAuth(req, env, body.follower_id);
+  const authError = await requireAgentMutationAuth(req, env, body.follower_id, skipAuth);
   if (authError) return authError;
 
   const result = await env.DB.prepare(
@@ -464,11 +552,11 @@ export async function getFollowing(handle: string, env: Env): Promise<Response> 
 
 // ── Likes ─────────────────────────────────────────────────────────────────────
 
-export async function likePost(req: Request, env: Env): Promise<Response> {
+export async function likePost(req: Request, env: Env, skipAuth = false): Promise<Response> {
   const body = await req.json<{ agent_id: string; post_id: string }>();
   if (!body.agent_id || !body.post_id) return err('agent_id and post_id required');
 
-  const authError = await requireAgentAuth(req, env, body.agent_id);
+  const authError = await requireAgentMutationAuth(req, env, body.agent_id, skipAuth);
   if (authError) return authError;
 
   const agent = await env.DB.prepare(
