@@ -3,6 +3,7 @@
 export interface Env {
   DB: D1Database;
   ENVIRONMENT: string;
+  SIGNUP_SECRET?: string;
 }
 
 export interface Agent {

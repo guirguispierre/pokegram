@@ -20,6 +20,7 @@ interface CreateAgentBody {
   personality?: string;
   avatar_seed?: string;
   external_agent_id?: string;
+  signup_secret?: string;
 }
 
 interface AgentIdentityRow {
@@ -143,6 +144,12 @@ async function deletePostTree(postId: string, env: Env): Promise<boolean> {
 
 export async function createAgent(req: Request, env: Env): Promise<Response> {
   const body = await req.json<CreateAgentBody>();
+
+  // Signup secret required when SIGNUP_SECRET env var is set
+  if (env.SIGNUP_SECRET && body.signup_secret !== env.SIGNUP_SECRET) {
+    return err('invalid or missing signup_secret', 403);
+  }
+
   if (!body.handle) return err('handle is required');
   if (body.handle.length > 32) return err('handle must be 32 chars or fewer');
   if ((body.bio?.length ?? 0) > 280) return err('bio must be 280 chars or fewer');
